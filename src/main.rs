@@ -11,6 +11,20 @@ fn main() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8080")?;
     println!("Servidor iniciado en http://127.0.0.1:8080");
 
+    // Lista de comandos imlementados
+    let commands = vec![
+        "/fibonacci", "/createfile", "/deletefile", "/status", "/reverse", "/toupper",
+        "/random", "/timestamp", "/hash", "/simulate", "/sleep", "/loadtest", "/help",
+
+        "/isprime","/factor","/pi","/mandelbrot","/matrixmul",
+        
+        "/sortfile","/wordcount","/grep","/compress","/hashfile",
+        
+        "/metrics"
+    ]
+    //Cantidad de hilos por comando
+    let threads_for_command = 2;
+
     // Bucle que espera conexiones
     for stream in listener.incoming() {
         match stream {
