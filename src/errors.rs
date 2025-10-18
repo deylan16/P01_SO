@@ -1,53 +1,52 @@
-use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::io::Write;
 
+/// Envía una respuesta HTTP con código, mensaje y cuerpo
+fn send_response(mut stream: TcpStream, status_line: &str, body: &str) {
+    let response = format!(
+        "{status_line}\r\n\
+        Content-Type: text/plain; charset=utf-8\r\n\
+        Content-Length: {}\r\n\
+        Connection: close\r\n\
+        \r\n\
+        {}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
 
-pub fn error400(mut stream: TcpStream, explain:&str) {
-    let resp = format!(
-        "HTTP/1.0 400 Bad Request\r\n\r\n{}",
-        explain
-    );
-    let _ = stream.write(resp.as_bytes());
+/// 400 - Bad Request
+pub fn error400(stream: TcpStream, explain: &str) {
+    send_response(stream, "HTTP/1.0 400 Bad Request", explain);
 }
-pub fn error404(mut stream: TcpStream, explain:&str) {
-    let resp = format!(
-        "HTTP/1.0 404 Not Found\r\n\r\n{}",
-        explain
-    );
-    let _ = stream.write(resp.as_bytes());
+
+/// 404 - Not Found
+pub fn error404(stream: TcpStream, explain: &str) {
+    send_response(stream, "HTTP/1.0 404 Not Found", explain);
 }
-pub fn error409(mut stream: TcpStream, explain:&str) {
-    let resp = format!(
-        "HTTP/1.0 409 Conflict\r\n\r\n{}",
-        explain
-    );
-    let _ = stream.write(resp.as_bytes());
+
+/// 409 - Conflict
+pub fn error409(stream: TcpStream, explain: &str) {
+    send_response(stream, "HTTP/1.0 409 Conflict", explain);
 }
-pub fn error429(mut stream: TcpStream, explain:&str) {
-    let resp = format!(
-        "HTTP/1.0 429 Too Many Request\r\n\r\n{}",
-        explain
-    );
-    let _ = stream.write(resp.as_bytes());
+
+/// 429 - Too Many Requests
+pub fn error429(stream: TcpStream, explain: &str) {
+    send_response(stream, "HTTP/1.0 429 Too Many Requests", explain);
 }
-pub fn error500(mut stream: TcpStream, explain:&str) {
-    let resp = format!(
-        "HTTP/1.0 500 Internal Server Error\r\n\r\n{}",
-        explain
-    );
-    let _ = stream.write(resp.as_bytes());
+
+/// 500 - Internal Server Error
+pub fn error500(stream: TcpStream, explain: &str) {
+    send_response(stream, "HTTP/1.0 500 Internal Server Error", explain);
 }
-pub fn error503(mut stream: TcpStream, explain:&str) {
-    let resp = format!(
-        "HTTP/1.0 503 Service Unavailable\r\n\r\n{}",
-        explain
-    );
-    let _ = stream.write(resp.as_bytes());
+
+/// 503 - Service Unavailable
+pub fn error503(stream: TcpStream, explain: &str) {
+    send_response(stream, "HTTP/1.0 503 Service Unavailable", explain);
 }
-pub fn res200(mut stream: TcpStream, explain:&str) {
-    let resp = format!(
-        "HTTP/1.0 200 Good Conection\r\n\r\n\r\n\r\n{}",
-        explain
-    );
-    let _ = stream.write(resp.as_bytes());
+
+/// 200 - OK
+pub fn res200(stream: TcpStream, explain: &str) {
+    send_response(stream, "HTTP/1.0 200 OK", explain);
 }
