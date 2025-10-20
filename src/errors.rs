@@ -50,3 +50,27 @@ pub fn error503(stream: TcpStream, explain: &str) {
 pub fn res200(stream: TcpStream, explain: &str) {
     send_response(stream, "HTTP/1.0 200 OK", explain);
 }
+
+// responder con content-type configurable
+fn send_response_with_ct(
+    mut stream: TcpStream,
+    status_line: &str,
+    content_type: &str,
+    body: &str,
+) {
+    let bytes = body.as_bytes();
+    let head = format!(
+        "{status}\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
+        status = status_line,
+        ct = content_type,
+        len = bytes.len()
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(bytes);
+    let _ = stream.flush();
+}
+
+// NUEVO: 200 OK con JSON 
+pub fn res200_json(stream: TcpStream, body: &str) {
+    send_response_with_ct(stream, "HTTP/1.0 200 OK", "application/json; charset=utf-8", body);
+}

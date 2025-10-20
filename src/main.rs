@@ -1,18 +1,28 @@
 mod control;
 mod errors;
 use control::{new_state, WorkerInfo};
+
 use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write};
+use std::io::Read; 
 use std::sync::mpsc::{self, Sender};
 use std::io;
-use std::collections::HashMap;
+use std::collections::HashMap; 
 use std::thread;
-use errors::{error400,error404,error409,error429,error500,error503,res200};
+
+use errors::{error400, error404, error500, res200};
+use errors::res200_json;
+
+use chrono::Utc;
+use serde_json::json;
+use urlencoding::decode;
+
+
 //Estrucuta para cada worker
 struct Task {
     path_and_args: String,
     stream: TcpStream,
 }
+
 fn main() -> io::Result<()> {
     // Estado compartido
     let state = new_state();
@@ -39,7 +49,6 @@ fn main() -> io::Result<()> {
 
     let mut counters: HashMap<&str, usize> = HashMap::new();
 
-
     for &cmd in &commands {
         let mut senders = Vec::with_capacity(workers_for_command);
         
@@ -60,6 +69,38 @@ fn main() -> io::Result<()> {
                         busy: false,
                     });
                 }
+
+            // --- Helper local: parsea "a=b&c=d" haciendo también + -> ' ' ---
+            let parse_query = |qs: &str| -> std::collections::HashMap<String, String> {
+                let mut m = std::collections::HashMap::new();
+                for pair in qs.split('&') {
+                    if pair.is_empty() { continue; }
+                    let mut it = pair.splitn(2, '=');
+
+                    // valores crudos
+                    let k0 = it.next().unwrap_or("");
+                    let v0 = it.next().unwrap_or("");
+
+                    // '+' => espacio (form-urlencoded)
+                    let k_fixed = k0.replace('+', " ");
+                    let v_fixed = v0.replace('+', " ");
+
+                    // decodifica %xx sin violar el borrow checker
+                    let k = match decode(&k_fixed) {
+                        Ok(cow) => cow.into_owned(),
+                        Err(_)  => k_fixed,   // movemos k_fixed aquí con seguridad
+                    };
+                    let v = match decode(&v_fixed) {
+                        Ok(cow) => cow.into_owned(),
+                        Err(_)  => v_fixed,
+                    };
+
+                    m.insert(k, v);
+                }
+                m
+            };
+
+
                 //El for pasa escuchando si entra una nueva tarea al canal del worker
                 for mut task in rx {
                     //El worker se pone como ocupado
@@ -69,12 +110,64 @@ fn main() -> io::Result<()> {
                             w.busy = true;
                         }
                     }
-                    // Se realiza el proceso
-                    let message = format!("Ejecutando {} en el worker {:?}", &task.path_and_args, tid);
-                    // Enviar respuesta al cliente
-                    res200(task.stream.try_clone().unwrap(), &message);
-                    
-    
+
+
+                    // Separa path y query de la solicitud original 
+                    let (path, qmap) = {
+                        let mut it = task.path_and_args.splitn(2, '?');
+                        let p = it.next().unwrap_or("/");
+                        let q = it.next().unwrap_or("");
+                        (p, parse_query(q))
+                    };
+
+                    match path {
+                        // /reverse?text=texto
+                        "/reverse" => {
+                            if let Some(text) = qmap.get("text") {
+                                let rev: String = text.chars().rev().collect();
+                                res200(task.stream.try_clone().unwrap(), &rev);
+                            } else {
+                                error400(task.stream.try_clone().unwrap(), "Falta parámetro 'text'");
+                            }
+                        }
+
+                        // /toupper?text=texto -> Texto
+                        "/toupper" => {
+                            if let Some(text) = qmap.get("text") {
+                                let up = text.to_uppercase();
+                                res200(task.stream.try_clone().unwrap(), &up);
+                            } else {
+                                error400(task.stream.try_clone().unwrap(), "Falta parámetro 'text'");
+                            }
+                        }
+
+                        // /fibonacci?n=30 -> valor de F(n)
+                        "/fibonacci" => {
+                            match qmap.get("n").and_then(|s| s.parse::<u64>().ok()) {
+                                Some(n) if n <= 93 => { 
+                                    let (mut a, mut b) = (0u128, 1u128);
+                                    for _ in 0..n { let t = a + b; a = b; b = t; }
+                                    // a = F(n)
+                                    res200(task.stream.try_clone().unwrap(), &format!("{}", a));
+                                }
+                                Some(_) => {
+                                    error400(task.stream.try_clone().unwrap(), "n demasiado grande (max 93)");
+                                }
+                                None => {
+                                    error400(task.stream.try_clone().unwrap(), "Parámetro 'n' inválido o faltante");
+                                }
+                            }
+                        }
+
+                        _ => {
+                            // Se realiza el proceso
+                            let message = format!("Ejecutando {} en el worker {:?}", &task.path_and_args, tid);
+                            // Enviar respuesta al cliente
+                            res200(task.stream.try_clone().unwrap(), &message);
+                        }
+                    }
+                    // ------------------------------------------------------------------
+
                     //El worker se pone como disponible
                     {
                         let mut st = state_clone.lock().unwrap();
@@ -88,8 +181,8 @@ fn main() -> io::Result<()> {
         }
         pool_of_workers_for_command.insert(cmd, senders);
         counters.insert(cmd, 0);
-
     }
+
     // Bucle que espera conexiones
     for stream in listener.incoming() {
         match stream {
@@ -123,6 +216,25 @@ fn main() -> io::Result<()> {
                     st.total_connections += 1;
                 }
 
+                //  /status responde JSON aquí ---
+                if path == "/status" {
+                    let st = state.lock().unwrap();
+                    let uptime = (Utc::now() - st.start_time).num_seconds();
+
+                    let body = json!({
+                        "uptime_seconds": uptime,
+                        "total_connections": st.total_connections,
+                        "pid": st.pid,
+                        "workers": st.workers.iter().map(|w| {
+                            json!({"command": w.command, "thread_id": w.thread_id, "busy": w.busy})
+                        }).collect::<Vec<_>>()
+                    }).to_string();
+
+                    res200_json(stream, &body);
+                    continue; // importante: no encolar esta solicitud
+                }
+
+
                 // Verifica el comando existe en el pool de workers por comando
                 if let Some(senders) = pool_of_workers_for_command.get(path) {
                     //Obtiene el indice el worker que sigue para asignar
@@ -152,7 +264,6 @@ fn main() -> io::Result<()> {
                     error404(stream, path_and_args);
                 }
 
-                
             }
             Err(e) => {
                 eprintln!("Error en la conexión: {}", e);
@@ -162,5 +273,3 @@ fn main() -> io::Result<()> {
 
     Ok(())
 }
-
-

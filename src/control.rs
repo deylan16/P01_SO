@@ -1,14 +1,15 @@
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use std::sync::{Arc, Mutex};
 
-/// Información de cada worker thread
+#[derive(Serialize, Clone)]
 pub struct WorkerInfo {
     pub command: String,
     pub thread_id: String,
     pub busy: bool,
 }
 
-/// Estado compartido del servidor
+#[derive(Serialize, Clone)]
 pub struct ServerState {
     pub start_time: DateTime<Utc>,
     pub total_connections: usize,
