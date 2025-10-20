@@ -16,6 +16,12 @@ use chrono::Utc;
 use serde_json::json;
 use urlencoding::decode;
 
+use rand::{thread_rng, Rng};
+use rand::distributions::Alphanumeric;
+use sha2::{Sha256, Digest};
+use std::time::{Duration, Instant};
+
+
 
 //Estrucuta para cada worker
 struct Task {
@@ -120,52 +126,79 @@ fn main() -> io::Result<()> {
                         (p, parse_query(q))
                     };
 
-                    match path {
-                        // /reverse?text=texto
-                        "/reverse" => {
-                            if let Some(text) = qmap.get("text") {
-                                let rev: String = text.chars().rev().collect();
-                                res200(task.stream.try_clone().unwrap(), &rev);
-                            } else {
-                                error400(task.stream.try_clone().unwrap(), "Falta parámetro 'text'");
+                                    match path {
+                    // /reverse?text=texto
+                    "/reverse" => {
+                        if let Some(text) = qmap.get("text") {
+                            let rev: String = text.chars().rev().collect();
+                            res200(task.stream.try_clone().unwrap(), &rev);
+                        } else {
+                            error400(task.stream.try_clone().unwrap(), "Falta parámetro 'text'");
+                        }
+                    },
+
+                    // /toupper?text=texto -> TEXTO
+                    "/toupper" => {
+                        if let Some(text) = qmap.get("text") {
+                            let up = text.to_uppercase();
+                            res200(task.stream.try_clone().unwrap(), &up);
+                        } else {
+                            error400(task.stream.try_clone().unwrap(), "Falta parámetro 'text'");
+                        }
+                    },
+
+                    // /fibonacci?n=30 -> valor de F(n)
+                    "/fibonacci" => {
+                        match qmap.get("n").and_then(|s| s.parse::<u64>().ok()) {
+                            Some(n) if n <= 93 => {
+                                let (mut a, mut b) = (0u128, 1u128);
+                                for _ in 0..n { let t = a + b; a = b; b = t; }
+                                res200(task.stream.try_clone().unwrap(), &format!("{}", a));
+                            }
+                            Some(_) => {
+                                error400(task.stream.try_clone().unwrap(), "n demasiado grande (max 93)");
+                            }
+                            None => {
+                                error400(task.stream.try_clone().unwrap(), "Parámetro 'n' inválido o faltante");
                             }
                         }
+                    },
 
-                        // /toupper?text=texto -> Texto
-                        "/toupper" => {
-                            if let Some(text) = qmap.get("text") {
-                                let up = text.to_uppercase();
-                                res200(task.stream.try_clone().unwrap(), &up);
-                            } else {
-                                error400(task.stream.try_clone().unwrap(), "Falta parámetro 'text'");
-                            }
-                        }
+                    // /random?min=0&max=100  -> entero aleatorio en [min, max]
+                    "/random" => {
+                        let min = qmap.get("min").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+                        let max = qmap.get("max").and_then(|s| s.parse::<i64>().ok()).unwrap_or(100);
 
-                        // /fibonacci?n=30 -> valor de F(n)
-                        "/fibonacci" => {
-                            match qmap.get("n").and_then(|s| s.parse::<u64>().ok()) {
-                                Some(n) if n <= 93 => { 
-                                    let (mut a, mut b) = (0u128, 1u128);
-                                    for _ in 0..n { let t = a + b; a = b; b = t; }
-                                    // a = F(n)
-                                    res200(task.stream.try_clone().unwrap(), &format!("{}", a));
-                                }
-                                Some(_) => {
-                                    error400(task.stream.try_clone().unwrap(), "n demasiado grande (max 93)");
-                                }
-                                None => {
-                                    error400(task.stream.try_clone().unwrap(), "Parámetro 'n' inválido o faltante");
-                                }
-                            }
+                        if min > max {
+                            error400(task.stream.try_clone().unwrap(), "min debe ser <= max");
+                        } else {
+                            let mut rng = rand::thread_rng();
+                            let n = rng.gen_range(min..=max);
+                            res200(task.stream.try_clone().unwrap(), &n.to_string());
                         }
+                    },
 
-                        _ => {
-                            // Se realiza el proceso
-                            let message = format!("Ejecutando {} en el worker {:?}", &task.path_and_args, tid);
-                            // Enviar respuesta al cliente
-                            res200(task.stream.try_clone().unwrap(), &message);
+                    // /hash?text=hola  -> sha256 en hex
+                    "/hash" => {
+                        if let Some(text) = qmap.get("text") {
+                            let mut hasher = Sha256::new();
+                            hasher.update(text.as_bytes());
+                            let digest = hasher.finalize();
+                            let hex = format!("{:x}", digest);
+                            res200(task.stream.try_clone().unwrap(), &hex);
+                        } else {
+                            error400(task.stream.try_clone().unwrap(), "Falta parámetro 'text'");
                         }
-                    }
+                    },
+
+                    // fallback: lo que ya tenías
+                    _ => {
+                        let message = format!("Ejecutando {} en el worker {:?}", &task.path_and_args, tid);
+                        res200(task.stream.try_clone().unwrap(), &message);
+                    },
+                }
+
+
                     // ------------------------------------------------------------------
 
                     //El worker se pone como disponible
