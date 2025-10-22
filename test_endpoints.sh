@@ -93,7 +93,7 @@ ls -lh "$TMP_PGM" || true
 echo "Cabecera PGM:"
 head -n 3 "$TMP_PGM" || true
 
-banner "MATRIXMUL n=120 (puede tardar un poco)"
+banner "MATRIXMUL n=120 "
 curl -s "$BASE/matrixmul?n=120" ; echo
 
 banner "METRICS"

@@ -1,5 +1,5 @@
-use std::net::TcpStream;
 use std::io::Write;
+use std::net::TcpStream;
 
 /// Envía una respuesta HTTP con código, mensaje y cuerpo
 fn send_response(mut stream: TcpStream, status_line: &str, body: &str) {
@@ -52,12 +52,7 @@ pub fn res200(stream: TcpStream, explain: &str) {
 }
 
 // responder con content-type configurable
-fn send_response_with_ct(
-    mut stream: TcpStream,
-    status_line: &str,
-    content_type: &str,
-    body: &str,
-) {
+fn send_response_with_ct(mut stream: TcpStream, status_line: &str, content_type: &str, body: &str) {
     let bytes = body.as_bytes();
     let head = format!(
         "{status}\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
@@ -70,7 +65,12 @@ fn send_response_with_ct(
     let _ = stream.flush();
 }
 
-// NUEVO: 200 OK con JSON 
+// NUEVO: 200 OK con JSON
 pub fn res200_json(stream: TcpStream, body: &str) {
-    send_response_with_ct(stream, "HTTP/1.0 200 OK", "application/json; charset=utf-8", body);
+    send_response_with_ct(
+        stream,
+        "HTTP/1.0 200 OK",
+        "application/json; charset=utf-8",
+        body,
+    );
 }
