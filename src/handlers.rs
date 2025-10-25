@@ -641,11 +641,11 @@ pub fn handle_command(
             
 
             let mut st = state.lock().unwrap();
-            if let Some(job) = st.jobs.get("job123") {
-                println!("job123: {:?}", job.status);
+            if let Some(job) = st.jobs.get(qmap.get("id").unwrap_or(&"".to_string())) {
+                
                 let result = {
                     json!({
-                        "job_id": "job123",
+                        "job_id": job.id.to_string(),
                         "status": job.status.to_string(),
 
                     })
