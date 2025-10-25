@@ -7,20 +7,30 @@ use handlers::handle_command;
 use std::collections::HashMap;
 use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
+use std::time::Instant;
 
-use errors::res200_json;
-use errors::{error400, error404, error500, res200};
+use errors::{ResponseMeta, error400, error404, error500, res200, res200_json};
 
 use chrono::Utc;
 use serde_json::json;
 use urlencoding::decode;
 
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_request_id() -> String {
+    let id = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("req-{}", id)
+}
+
 //Estrucuta para cada worker
 struct Task {
     path_and_args: String,
     stream: TcpStream,
+    request_id: String,
+    dispatched_at: Instant,
 }
 
 fn main() -> io::Result<()> {
@@ -66,6 +76,10 @@ fn main() -> io::Result<()> {
     let mut counters: HashMap<&str, usize> = HashMap::new();
 
     for &cmd in &commands {
+        {
+            let mut st = state.lock().unwrap();
+            st.ensure_command(cmd);
+        }
         let mut senders = Vec::with_capacity(workers_for_command);
 
         //Para cada comando crea la siguientes acciones workers_for_command veces
@@ -77,6 +91,7 @@ fn main() -> io::Result<()> {
             thread::spawn(move || {
                 // Se almacena el nuevo worker
                 let tid = thread::current().id();
+                let worker_label = format!("{}:{:?}", std::process::id(), tid);
                 {
                     let mut st = state_clone.lock().unwrap();
                     st.workers.push(WorkerInfo {
@@ -137,15 +152,22 @@ fn main() -> io::Result<()> {
                         let mut it = task.path_and_args.splitn(2, '?');
                         let p = it.next().unwrap_or("/");
                         let q = it.next().unwrap_or("");
-                        (p, parse_query(q))
+                        (p.to_string(), parse_query(q))
                     };
 
-                    let handled = handle_command(path, &qmap, &task.stream);
+                    let meta = ResponseMeta::new(task.request_id.clone(), worker_label.clone());
+                    let handled = handle_command(&path, &qmap, &task.stream, &meta, &state_clone);
 
                     if !handled {
                         let message =
                             format!("Ejecutando {} en el worker {:?}", &task.path_and_args, tid);
-                        res200(task.stream.try_clone().unwrap(), &message);
+                        res200(task.stream.try_clone().unwrap(), &message, &meta);
+                    }
+
+                    let elapsed = task.dispatched_at.elapsed().as_millis() as u128;
+                    {
+                        let mut st = state_clone.lock().unwrap();
+                        st.record_completion(&path, elapsed);
                     }
 
                     // ------------------------------------------------------------------
@@ -173,13 +195,16 @@ fn main() -> io::Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
+                let request_id = next_request_id();
+                let main_meta =
+                    ResponseMeta::new(request_id.clone(), format!("{}:main", std::process::id()));
                 // Datos de la solucitud
                 let mut data = [0; 1024];
                 // Recorre la solicitud y la guarda en el data
                 let n = match stream.read(&mut data) {
                     Ok(n) if n > 0 => n,
                     _ => {
-                        error400(stream, "Bad request");
+                        error400(stream, "Bad request", &main_meta);
                         continue;
                     }
                 };
@@ -192,7 +217,7 @@ fn main() -> io::Result<()> {
                 let components: Vec<&str> = request_first_line.split_whitespace().collect();
                 //Se verifica que tenga los datos requeridos
                 if components.len() < 2 {
-                    error400(stream, "Bad request");
+                    error400(stream, "Bad request", &main_meta);
                     continue;
                 }
                 //Almacena la ruta del cliente solicitada
@@ -214,13 +239,15 @@ fn main() -> io::Result<()> {
                         "uptime_seconds": uptime,
                         "total_connections": st.total_connections,
                         "pid": st.pid,
+                        "queues": st.queues_snapshot(),
+                        "latency_ms": st.latency_snapshot(),
                         "workers": st.workers.iter().map(|w| {
                             json!({"command": w.command, "thread_id": w.thread_id, "busy": w.busy})
                         }).collect::<Vec<_>>()
                     })
                     .to_string();
 
-                    res200_json(stream, &body);
+                    res200_json(stream, &body, &main_meta);
                     continue; // importante: no encolar esta solicitud
                 }
 
@@ -239,18 +266,27 @@ fn main() -> io::Result<()> {
                             let task = Task {
                                 path_and_args: path_and_args.to_string(),
                                 stream: stream_clone,
+                                request_id: request_id.clone(),
+                                dispatched_at: Instant::now(),
                             };
                             //Envia la tarea al worker
                             if tx.send(task).is_err() {
-                                error500(stream, "Error despachando tarea");
+                                error500(stream, "Error despachando tarea", &main_meta);
+                            } else {
+                                let mut st = state.lock().unwrap();
+                                st.record_dispatch(path);
                             }
                         }
                         Err(e) => {
-                            error500(stream, &format!("No se pudo clonar el socket: {}", e));
+                            error500(
+                                stream,
+                                &format!("No se pudo clonar el socket: {}", e),
+                                &main_meta,
+                            );
                         }
                     }
                 } else {
-                    error404(stream, path_and_args);
+                    error404(stream, path_and_args, &main_meta);
                 }
             }
             Err(e) => {
