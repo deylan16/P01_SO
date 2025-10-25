@@ -2,9 +2,10 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-
+use std::net::{TcpStream};
+use std::sync::mpsc::{self, Sender};
 const MAX_LATENCY_SAMPLES: usize = 128;
-
+use std::time::Instant;
 #[derive(Serialize, Clone)]
 pub struct WorkerInfo {
     pub command: String,
@@ -12,12 +13,33 @@ pub struct WorkerInfo {
     pub busy: bool,
 }
 
+//Estrucuta para cada worker
+pub struct Task {
+    pub path_and_args: String,
+    pub stream: TcpStream,
+    pub request_id: String,
+    pub dispatched_at: Instant,
+    pub state: String,
+    pub job_id: String,
+}
+
+pub struct Job {
+    pub id: String,
+    pub status: String,
+
+}
 pub struct ServerState {
     pub start_time: DateTime<Utc>,
     pub total_connections: usize,
     pub pid: u32,
     pub workers: Vec<WorkerInfo>,
     pub command_stats: HashMap<String, CommandStats>,
+    pub jobs: HashMap<String, Job>,
+    pub id_job_counter: usize,
+    pub pool_of_workers_for_command:HashMap<String, Vec<Sender<Task>>>,
+    pub counters: HashMap<String, usize>,
+    pub workers_for_command: usize,
+    
 }
 
 pub type SharedState = Arc<Mutex<ServerState>>;
@@ -29,6 +51,11 @@ pub fn new_state() -> SharedState {
         pid: std::process::id(),
         workers: Vec::new(),
         command_stats: HashMap::new(),
+        jobs: HashMap::new(),
+        id_job_counter: 0,
+        pool_of_workers_for_command: HashMap::new(),
+        counters: HashMap::new(),
+        workers_for_command: 2,
     }))
 }
 

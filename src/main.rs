@@ -1,7 +1,7 @@
 mod control;
 mod errors;
 mod handlers;
-use control::{WorkerInfo, new_state};
+use control::{WorkerInfo, new_state, Task};
 use handlers::handle_command;
 
 use std::collections::HashMap;
@@ -25,17 +25,13 @@ fn next_request_id() -> String {
     format!("req-{}", id)
 }
 
-//Estrucuta para cada worker
-struct Task {
-    path_and_args: String,
-    stream: TcpStream,
-    request_id: String,
-    dispatched_at: Instant,
-}
+
 
 fn main() -> io::Result<()> {
     // Estado compartido
     let state = new_state();
+
+
 
     let listener = TcpListener::bind("127.0.0.1:8080")?;
     println!("Servidor iniciado en http://127.0.0.1:8080");
@@ -66,14 +62,21 @@ fn main() -> io::Result<()> {
         "/compress",
         "/hashfile",
         "/metrics",
+        "/jobs/submit",
+        "/jobs/status",
+        "/jobs/result",
+        "/jobs/cancel",
     ];
     //Cantidad de hilos por comando
-    let workers_for_command = 2;
+    let workers_for_command = {
+        let st = state.lock().unwrap();
+        st.workers_for_command
+    };
 
     //Almacena los workers de casa comando  fibonacci-> [work1,work2,...]
-    let mut pool_of_workers_for_command: HashMap<&str, Vec<Sender<Task>>> = HashMap::new();
+    //let mut pool_of_workers_for_command: HashMap<&str, Vec<Sender<Task>>> = HashMap::new();
 
-    let mut counters: HashMap<&str, usize> = HashMap::new();
+    //let mut counters: HashMap<&str, usize> = HashMap::new();
 
     for &cmd in &commands {
         {
@@ -90,6 +93,7 @@ fn main() -> io::Result<()> {
             let cmd_string = cmd.to_string();
             thread::spawn(move || {
                 // Se almacena el nuevo worker
+                
                 let tid = thread::current().id();
                 let worker_label = format!("{}:{:?}", std::process::id(), tid);
                 {
@@ -135,6 +139,10 @@ fn main() -> io::Result<()> {
 
                 //El for pasa escuchando si entra una nueva tarea al canal del worker
                 for task in rx {
+                    println!(
+                        "Worker {:?} recibió tarea: {}",
+                        tid, task.path_and_args
+                    );
                     //El worker se pone como ocupado
                     {
                         let mut st = state_clone.lock().unwrap();
@@ -156,7 +164,11 @@ fn main() -> io::Result<()> {
                     };
 
                     let meta = ResponseMeta::new(task.request_id.clone(), worker_label.clone());
-                    let handled = handle_command(&path, &qmap, &task.stream, &meta, &state_clone);
+                    println!(
+                        "Worker {:?} manejando comando: {}",
+                        tid, task.path_and_args
+                    );
+                    let handled = handle_command(&path, &qmap, &task.stream, &meta, &state_clone, &task.job_id);
 
                     if !handled {
                         let message =
@@ -187,8 +199,13 @@ fn main() -> io::Result<()> {
             });
             senders.push(tx);
         }
-        pool_of_workers_for_command.insert(cmd, senders);
-        counters.insert(cmd, 0);
+        {
+            let mut st = state.lock().unwrap();
+            st.pool_of_workers_for_command.insert(cmd.to_string(), senders);
+            st.counters.insert(cmd.to_string(), 0);
+        }
+
+        
     }
 
     // Bucle que espera conexiones
@@ -251,15 +268,33 @@ fn main() -> io::Result<()> {
                     continue; // importante: no encolar esta solicitud
                 }
 
+                
+
                 // Verifica el comando existe en el pool de workers por comando
-                if let Some(senders) = pool_of_workers_for_command.get(path) {
+                let senders = {
+                    let mut st = state.lock().unwrap();
+
+                    // Obtengo senders primero, como copia de referencia
+                    let senders = st.pool_of_workers_for_command.get(path).cloned(); // clonado o con Arc
+                    senders
+                };
+                if let Some(senders) = senders {
                     //Obtiene el indice el worker que sigue para asignar
-                    let idx = counters.get_mut(path).unwrap();
-                    //Obtiene el canal del worker para mandar la tarea
-                    let tx = &senders[*idx];
-                    //Incrementa el indice del siquiente worker
-                    *idx = (*idx + 1) % workers_for_command;
+                    
+                    
+                    let tx = {
+                        let mut st = state.lock().unwrap();
+                        let idx  = st.counters.get_mut(path).unwrap();
+                        
+                        
+                        //Obtiene el canal del worker para mandar la tarea
+                        let tx = &senders[*idx];
+                        //Incrementa el indice del siquiente worker
+                        *idx = (*idx + 1) % workers_for_command;
+                        tx
+                    };
                     //Clona el socket y valida si funciona
+                   
                     match stream.try_clone() {
                         Ok(stream_clone) => {
                             //Crea la tarea para mandar
@@ -268,8 +303,11 @@ fn main() -> io::Result<()> {
                                 stream: stream_clone,
                                 request_id: request_id.clone(),
                                 dispatched_at: Instant::now(),
+                                state: "queued".to_string(),
+                                job_id: "".to_string(),
                             };
                             //Envia la tarea al worker
+                            
                             if tx.send(task).is_err() {
                                 error500(stream, "Error despachando tarea", &main_meta);
                             } else {

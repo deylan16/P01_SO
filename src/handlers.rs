@@ -1,3 +1,4 @@
+
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -15,8 +16,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use xz2::write::XzEncoder;
 
-use crate::control::SharedState;
-use crate::errors::{ResponseMeta, error400, error500, res200_json};
+use crate::control::{Job, SharedState,Task};
+use crate::errors::{ResponseMeta,error404, error400, error500, res200_json};
 
 const MAX_RANDOM_COUNT: u64 = 1024;
 const MAX_PI_DIGITS: usize = 1000;
@@ -29,6 +30,7 @@ pub fn handle_command(
     stream: &TcpStream,
     meta: &ResponseMeta,
     state: &SharedState,
+    job_id: &str,
 ) -> bool {
     match path {
         "/reverse" => {
@@ -235,11 +237,17 @@ pub fn handle_command(
             true
         }
         "/sleep" => {
+            println!("Entrando a sleep...");
+            println!("qmap: {:?}", qmap);
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             let seconds = qmap
                 .get("seconds")
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(0);
             sleep(Duration::from_secs(seconds));
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "done".to_string());}
             respond_json(stream, meta, json!({"slept_seconds": seconds}));
             true
         }
@@ -537,6 +545,127 @@ pub fn handle_command(
             }
             true
         }
+        "/jobs/submit" => {
+            println!("{:#?}", qmap);
+            let workers_for_command = {
+                let st = state.lock().unwrap();
+                st.workers_for_command
+                
+            };
+            let id_job_counter = {
+                let mut st = state.lock().unwrap(); // mutable porque vamos a incrementar
+                let id = st.id_job_counter;          // guardamos el valor actual
+                st.id_job_counter += 1;              // incrementamos
+                id                                   // esto se devuelve del bloque
+            };
+            {let mut st = state.lock().unwrap();
+            
+            
+            st.jobs.insert(id_job_counter.to_string(), Job {
+                id: id_job_counter.to_string(),
+                status: "queued".to_string(),
+                /*path_and_args: qmap_to_string(qmap),
+                stream: stream_clone(stream),
+                request_id: meta.request_id.clone(),
+                dispatched_at: Instant::now(),
+                state: "queued".to_string(),*/
+            });}
+            let senders = {
+                    let mut st = state.lock().unwrap();
+
+                    // Obtengo senders primero, como copia de referencia
+                    let senders = st.pool_of_workers_for_command.get(path).cloned(); // clonado o con Arc
+                    senders
+                };
+                println!("senders for command {}: {:?}", path, senders);
+                if let Some(senders) = senders {
+                    //Obtiene el indice el worker que sigue para asignar
+                    
+                    
+                    let tx = {
+                        let mut st = state.lock().unwrap();
+                        let idx  = st.counters.get_mut(path).unwrap();
+                        
+                        
+                        //Obtiene el canal del worker para mandar la tarea
+                        let tx = &senders[*idx];
+                        //Incrementa el indice del siquiente worker
+                        *idx = (*idx + 1) % workers_for_command;
+                        tx
+                    };
+                    //Clona el socket y valida si funciona
+                    
+                    match stream.try_clone() {
+                        Ok(stream_clone) => {
+                            //Crea la tarea para mandar
+                            let task = Task {
+                                path_and_args: qmap_to_string(&qmap),
+                                stream: stream_clone,
+                                request_id: meta.request_id.clone(),
+                                dispatched_at: Instant::now(),
+                                state: "queued".to_string(),
+                                job_id: id_job_counter.to_string(),
+                            };
+                            //Envia la tarea al worker
+                            println!("Enviando tarea al worker del comando {}", path);
+                            if tx.send(task).is_err() {
+                                error500(stream.try_clone().unwrap(), "Error despachando tarea", meta);
+                            } else {
+                                let mut st = state.lock().unwrap();
+                                st.record_dispatch(path);
+                            }
+                        }
+                        Err(e) => {
+                            error500(
+                                stream_clone(stream),
+                                &format!("No se pudo clonar el socket: {}", e),
+                                meta,
+                            );
+                        }
+                    }
+                } else {
+                    error404(stream_clone(stream), &qmap_to_string(&qmap), meta);
+                }
+            let result = {
+                json!({
+                    "job_id": id_job_counter.to_string(),
+                    "status": "queued".to_string(),
+
+                })
+            };
+            respond_json(stream, meta, result);
+            true
+        }
+        "/jobs/status" => {
+            println!("{:#?}", qmap);
+            
+
+            let mut st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get("job123") {
+                println!("job123: {:?}", job.status);
+                let result = {
+                    json!({
+                        "job_id": "job123",
+                        "status": job.status.to_string(),
+
+                    })
+                };
+                
+                respond_json(stream, meta, result);
+            }
+            else {
+                error400(stream_clone(stream), "missing 'ID' parameter", meta);
+            }
+            true
+        }
+        "/jobs/result" => {
+            println!("{:#?}", qmap);
+            true
+        }
+        "/jobs/cancel" => {
+            println!("{:#?}", qmap);
+            true
+        }
         "/metrics" => {
             let snapshot = {
                 let st = state.lock().unwrap();
@@ -571,6 +700,24 @@ fn fibonacci(n: u64) -> u128 {
     }
     a
 }
+fn qmap_to_string(qmap: &HashMap<String, String>) -> String {
+    // 1️⃣ Tomar el valor de la clave "task"
+    let task = qmap.get("task").cloned().unwrap_or_default();
+
+    // 2️⃣ Filtrar las demás claves y construir key=value
+    let params: Vec<String> = qmap.iter()
+        .filter(|(k, _)| k != &"task")  // excluye "task"
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect();
+
+    // 3️⃣ Unir todo con comas
+    if params.is_empty() {
+        format!("{}", task)
+    } else {
+        format!("/{}?{}", task, params.join(","))
+    }
+}
+
 
 fn check_prime(n: u128) -> bool {
     if n < 2 {
