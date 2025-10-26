@@ -24,11 +24,14 @@ pub struct Task {
     pub job_id: String,
 }
 
+#[derive(Serialize, Clone)]
 pub struct Job {
     pub id: String,
     pub status: String,
     pub error_message: String,
     pub result: Value,
+    pub progress: u8,
+    pub eta_ms: u64,
 
 }
 pub struct ServerState {

@@ -122,7 +122,7 @@ pub fn res200(stream: TcpStream, explain: &str, meta: &ResponseMeta, job_id: &st
     if job_id != "" {
         let mut state = state.lock().unwrap();
         if let Some(job) = state.jobs.get_mut(job_id) {
-            job.status = "completed".to_string();
+            job.status = "done".to_string();
             job.error_message = "".to_string();
         }
     }
@@ -162,11 +162,34 @@ pub fn res200_json(stream: TcpStream, body: &str, meta: &ResponseMeta, job_id: &
     if job_id != "" {
         let mut state = state.lock().unwrap();
         if let Some(job) = state.jobs.get_mut(job_id) {
-            job.status = "completed".to_string();
+            job.status = "done".to_string();
             job.error_message = "".to_string();
             job.result = serde_json::from_str(body).unwrap_or(Value::Null);
         }
     }
+    send_response_with_ct(
+        stream,
+        "HTTP/1.0 200 OK",
+        "application/json; charset=utf-8",
+        body,
+        meta,
+    );
+}
+
+
+//Cancel job 200 OK con JSON
+pub fn cancel_res200_json(stream: TcpStream, body: &str, meta: &ResponseMeta, job_id: &str,state: &SharedState) {
+
+    if job_id != "" {
+        {let mut state = state.lock().unwrap();
+        if let Some(job) = state.jobs.get_mut(job_id) {
+            job.status = "canceled".to_string();
+            job.error_message = "".to_string();
+            job.result = Value::Null;
+        }}
+    }
+    
+    
     send_response_with_ct(
         stream,
         "HTTP/1.0 200 OK",

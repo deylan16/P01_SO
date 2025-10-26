@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use xz2::write::XzEncoder;
 
 use crate::control::{Job, SharedState,Task};
-use crate::errors::{ResponseMeta,error404, error400, error500, res200_json};
+use crate::errors::{ResponseMeta,error404, error400, error500, res200_json, cancel_res200_json};
 
 const MAX_RANDOM_COUNT: u64 = 1024;
 const MAX_PI_DIGITS: usize = 1000;
@@ -315,11 +315,22 @@ pub fn handle_command(
             true
         }
         "/isprime" => {
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             match qmap.get("n").and_then(|s| s.parse::<u128>().ok()) {
                 Some(n) => {
                     let start = Instant::now();
-                    let is_prime = check_prime(n);
+                    let is_prime = check_prime(n,job_id,state);
                     let elapsed = start.elapsed().as_millis();
+                    let job_status = {
+                        let st = state.lock().unwrap();
+                        st.jobs.get(job_id).map(|job| job.status.clone())
+                    };
+                    if let Some(status) = job_status {
+                        if status == "canceled" {
+                            return true; 
+                        }
+                    }
                     respond_json(
                         stream,
                         meta,
@@ -337,11 +348,22 @@ pub fn handle_command(
             true
         }
         "/factor" => {
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             match qmap.get("n").and_then(|s| s.parse::<u128>().ok()) {
                 Some(mut n) => {
                     let start = Instant::now();
-                    let factors = factorize(n);
+                    let factors = factorize(n,job_id,state);
                     let elapsed = start.elapsed().as_millis();
+                    let job_status = {
+                        let st = state.lock().unwrap();
+                        st.jobs.get(job_id).map(|job| job.status.clone())
+                    };
+                    if let Some(status) = job_status {
+                        if status == "canceled" {
+                            return true; 
+                        }
+                    }
                     respond_json(
                         stream,
                         meta,
@@ -358,6 +380,8 @@ pub fn handle_command(
             true
         }
         "/pi" => {
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             let digits = qmap
                 .get("digits")
                 .or_else(|| qmap.get("iters"))
@@ -373,8 +397,17 @@ pub fn handle_command(
                 return true;
             }
             let start = Instant::now();
-            let pi = compute_pi_digits(digits);
+            let pi = compute_pi_digits(digits,job_id,state);
             let elapsed = start.elapsed().as_millis();
+            let job_status = {
+                        let st = state.lock().unwrap();
+                        st.jobs.get(job_id).map(|job| job.status.clone())
+                    };
+                    if let Some(status) = job_status {
+                        if status == "canceled" {
+                            return true; 
+                        }
+                    }
             respond_json(
                 stream,
                 meta,
@@ -384,6 +417,8 @@ pub fn handle_command(
             true
         }
         "/mandelbrot" => {
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             let width = qmap
                 .get("width")
                 .and_then(|s| s.parse::<usize>().ok())
@@ -402,7 +437,16 @@ pub fn handle_command(
                 return true;
             }
             let (iters, elapsed, pgm_written) =
-                mandelbrot(width, height, max_iter, qmap.get("file"));
+                mandelbrot(width, height, max_iter, qmap.get("file"),job_id,state);
+            let job_status = {
+                        let st = state.lock().unwrap();
+                        st.jobs.get(job_id).map(|job| job.status.clone())
+                    };
+            if let Some(status) = job_status {
+                        if status == "canceled" {
+                            return true; 
+                        }
+                    }
             respond_json(
                 stream,
                 meta,
@@ -419,6 +463,8 @@ pub fn handle_command(
             true
         }
         "/matrixmul" => {
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             let size = qmap
                 .get("size")
                 .or_else(|| qmap.get("n"))
@@ -433,8 +479,17 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(42);
             let start = Instant::now();
-            let hash = matrix_multiply_hash(size, seed);
+            let hash = matrix_multiply_hash(size, seed,job_id,state);
             let elapsed = start.elapsed().as_millis();
+            let job_status = {
+                        let st = state.lock().unwrap();
+                        st.jobs.get(job_id).map(|job| job.status.clone())
+                    };
+            if let Some(status) = job_status {
+                        if status == "canceled" {
+                            return true; 
+                        }
+                    }
             respond_json(
                 stream,
                 meta,
@@ -449,6 +504,8 @@ pub fn handle_command(
             true
         }
         "/sortfile" => {
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) if !path.is_empty() => path,
                 _ => {
@@ -462,9 +519,18 @@ pub fn handle_command(
                 return true;
             }
             let start = Instant::now();
-            match sort_file(name, algo) {
+            match sort_file(name, algo,job_id,state) {
                 Ok((sorted_path, count)) => {
                     let elapsed = start.elapsed().as_millis();
+                    let job_status = {
+                        let st = state.lock().unwrap();
+                        st.jobs.get(job_id).map(|job| job.status.clone())
+                    };
+                    if let Some(status) = job_status {
+                        if status == "canceled" {
+                            return true; 
+                        }
+                    }
                     respond_json(
                         stream,
                         meta,
@@ -483,9 +549,21 @@ pub fn handle_command(
             true
         }
         "/wordcount" => {
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             match qmap.get("name").or_else(|| qmap.get("path")) {
-                Some(name) => match word_count(name) {
-                    Ok(stats) => respond_json(stream, meta, stats, job_id,state),
+                Some(name) => match word_count(name,job_id,state) {
+                    Ok(stats) => {
+                        let job_status = {
+                            let st = state.lock().unwrap();
+                            st.jobs.get(job_id).map(|job| job.status.clone())
+                        };
+                        if let Some(status) = job_status {
+                            if status == "canceled" {
+                                return true; 
+                            }
+                        }
+                        respond_json(stream, meta, stats, job_id,state)},
                     Err(err) => error500(stream_clone(stream), &err, meta, job_id,state),
                 },
                 None => error400(stream_clone(stream), "missing 'name' parameter", meta, job_id,state),
@@ -493,6 +571,8 @@ pub fn handle_command(
             true
         }
         "/grep" => {
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) => path,
                 None => {
@@ -519,13 +599,25 @@ pub fn handle_command(
                     return true;
                 }
             };
-            match grep_file(name, &regex) {
-                Ok(value) => respond_json(stream, meta, value, job_id,state),
+            match grep_file(name, &regex,job_id,state) {
+                Ok(value) => {
+                    let job_status = {
+                        let st = state.lock().unwrap();
+                        st.jobs.get(job_id).map(|job| job.status.clone())
+                    };
+                    if let Some(status) = job_status {
+                        if status == "canceled" {
+                            return true; 
+                        }
+                    }
+                    respond_json(stream, meta, value, job_id,state)},
                 Err(err) => error500(stream_clone(stream), &err, meta, job_id,state),
             }
             true
         }
         "/compress" => {
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) => path,
                 None => {
@@ -538,13 +630,25 @@ pub fn handle_command(
                 error400(stream_clone(stream), "codec must be gzip or xz", meta, job_id,state);
                 return true;
             }
-            match compress_file(name, codec) {
-                Ok(value) => respond_json(stream, meta, value, job_id,state),
+            match compress_file(name, codec,job_id,state) {
+                Ok(value) => {
+                    let job_status = {
+                        let st = state.lock().unwrap();
+                        st.jobs.get(job_id).map(|job| job.status.clone())
+                    };
+                    if let Some(status) = job_status {
+                        if status == "canceled" {
+                            return true; 
+                        }
+                    }
+                    respond_json(stream, meta, value, job_id,state)},
                 Err(err) => error500(stream_clone(stream), &err, meta, job_id,state),
             }
             true
         }
         "/hashfile" => {
+            { let mut st = state.lock().unwrap();
+              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) => path,
                 None => {
@@ -557,13 +661,23 @@ pub fn handle_command(
                 error400(stream_clone(stream), "unsupported algo (only sha256)", meta, job_id,state);
                 return true;
             }
-            match hash_file(name) {
-                Ok(hash) => respond_json(
+            match hash_file(name,job_id,state) {
+                Ok(hash) => {
+                    let job_status = {
+                        let st = state.lock().unwrap();
+                        st.jobs.get(job_id).map(|job| job.status.clone())
+                    };
+                    if let Some(status) = job_status {
+                        if status == "canceled" {
+                            return true; 
+                        }
+                    }
+                    respond_json(
                     stream,
                     meta,
                     json!({"file": name, "algorithm": "sha256", "digest": hash}),
                     job_id,state
-                ),
+                )},
                 Err(err) => error500(stream_clone(stream), &err, meta, job_id,state),
             }
             true
@@ -589,6 +703,8 @@ pub fn handle_command(
                 status: "queued".to_string(),
                 error_message: "".to_string(),
                 result: Value::Null,
+                progress: 0,
+                eta_ms: 0,
                 /*path_and_args: qmap_to_string(qmap),
                 stream: stream_clone(stream),
                 request_id: meta.request_id.clone(),
@@ -664,7 +780,7 @@ pub fn handle_command(
             true
         }
         "/jobs/status" => {
-            println!("{:#?}", qmap);
+            
             
 
             let mut st = state.lock().unwrap();
@@ -674,8 +790,8 @@ pub fn handle_command(
                     json!({
                         "job_id": job.id.to_string(),
                         "status": job.status.to_string(),
-                        "result": job.result.clone(),
-                        "error_message": job.error_message.to_string(),
+                        "progress": job.progress,
+                        "eta_ms": job.eta_ms
 
                     })
                 };
@@ -689,10 +805,84 @@ pub fn handle_command(
         }
         "/jobs/result" => {
             println!("{:#?}", qmap);
+            let job_id_param = qmap.get("id").unwrap_or(&"".to_string()).clone();
+            let job_opt = {
+                let st = state.lock().unwrap();
+                st.jobs.get(&job_id_param).cloned() // ← aquí clonás el Job, no la referencia
+            };
+            if let Some(job) = job_opt {
+                if job.status == "done" {
+                    respond_json(
+                        stream,
+                        meta,
+                        json!({
+                            "job_id": job.id.to_string(),
+                            "status": job.status.to_string(),
+                            "result": job.result.clone()
+                        }),
+                        job_id,
+                        state,
+                    );
+                } else if job.status == "error" {
+                    respond_json(
+                        stream,
+                        meta,
+                        json!({
+                            "job_id": job.id.to_string(),
+                            "status": job.status.to_string(),
+                            "error_message": job.error_message.to_string()
+                        }),
+                        job_id,
+                        state,
+                    );
+                }
+            } else {
+                error400(stream_clone(stream), "missing 'ID' parameter", meta, job_id, state);
+            }           
             true
         }
         "/jobs/cancel" => {
             println!("{:#?}", qmap);
+            let job_id_param = qmap.get("id").unwrap_or(&"".to_string()).clone();
+
+            let job_opt = {
+                let st = state.lock().unwrap();
+                st.jobs.get(&job_id_param).cloned() // ← aquí clonás el Job, no la referencia
+            };
+            if let Some(job) = job_opt {
+                if job.status == "done" || job.status == "error" {
+                    respond_json(
+                        stream,
+                        meta,
+                        json!({
+                            "job_id": job.id.to_string(),
+                            "status": job.status.to_string(),
+                            "message": "cannot cancel a completed job"
+                        }),
+                        job_id,
+                        state,
+                    );
+                } else {
+                    
+                    
+                    
+                    cancel_respond_json(
+                        stream,
+                        meta,
+                        json!({
+                            "job_id": job_id_param,
+                            "status": "canceled".to_string(),
+                            "message": "job canceled"
+                        }),
+                        
+                        &job_id_param,
+                        state,
+                    );
+                }
+            } else {
+                error400(stream_clone(stream), "missing 'ID' parameter", meta, job_id, state);
+            }
+            
             true
         }
         "/metrics" => {
@@ -714,6 +904,10 @@ pub fn handle_command(
 fn respond_json(stream: &TcpStream, meta: &ResponseMeta, value: Value, job_id: &str,state: &SharedState) {
     let body = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
     res200_json(stream_clone(stream), &body, meta, job_id, state);
+}
+fn cancel_respond_json(stream: &TcpStream, meta: &ResponseMeta, value: Value, job_id: &str,state: &SharedState) {
+    let body = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
+    cancel_res200_json(stream_clone(stream), &body, meta, job_id, state);
 }
 
 fn stream_clone(stream: &TcpStream) -> TcpStream {
@@ -748,7 +942,8 @@ fn qmap_to_string(qmap: &HashMap<String, String>) -> String {
 }
 
 
-fn check_prime(n: u128) -> bool {
+fn check_prime(n: u128, job_id: &str,state: &SharedState ) -> bool {
+
     if n < 2 {
         return false;
     }
@@ -756,7 +951,19 @@ fn check_prime(n: u128) -> bool {
         return n == 2;
     }
     let mut d = 3u128;
+
     while d * d <= n {
+        {
+            let mut st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get_mut(job_id) {
+                if job.status == "canceled" {
+                    
+                    
+                    return false; // Termina la comprobación si se ha cancelado
+                }
+            }
+            
+        }
         if n % d == 0 {
             return false;
         }
@@ -765,13 +972,25 @@ fn check_prime(n: u128) -> bool {
     true
 }
 
-fn factorize(mut n: u128) -> Vec<(u128, u32)> {
+fn factorize(mut n: u128, job_id: &str,state: &SharedState) -> Vec<(u128, u32)> {
     if n < 2 {
         return vec![(n, 1)];
     }
     let mut res = Vec::new();
     let mut d = 2;
     while (d as u128) * (d as u128) <= n {
+        {
+            let mut st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get_mut(job_id) {
+                if job.status == "canceled" {
+                    
+                    
+                    return Vec::new(); // coi
+
+                }
+            }
+            
+        }
         let mut cnt = 0;
         while n % d as u128 == 0 {
             n /= d as u128;
@@ -788,7 +1007,7 @@ fn factorize(mut n: u128) -> Vec<(u128, u32)> {
     res
 }
 
-fn compute_pi_digits(digits: usize) -> String {
+fn compute_pi_digits(digits: usize, job_id: &str,state: &SharedState) -> String {
     if digits == 0 {
         return "3".to_string();
     }
@@ -799,6 +1018,17 @@ fn compute_pi_digits(digits: usize) -> String {
     let mut predigit = 0u32;
 
     for _ in 0..digits {
+        {
+            let mut st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get_mut(job_id) {
+                if job.status == "canceled" {
+                    
+                    
+                    return "Cancelado".to_string(); // Termina la comprobación si se ha cancelado
+                }
+            }
+            
+        }
         let mut carry = 0u32;
         for j in (0..len).rev() {
             let denominator = 2 * j as u32 + 1;
@@ -835,11 +1065,24 @@ fn mandelbrot(
     height: usize,
     max_iter: u32,
     file: Option<&String>,
+     job_id: &str,state: &SharedState
 ) -> (Vec<Vec<u32>>, u128, Option<String>) {
     let start = Instant::now();
     let mut grid = vec![vec![0u32; width]; height];
     for y in 0..height {
         for x in 0..width {
+            {
+                let mut st = state.lock().unwrap();
+                if let Some(job) = st.jobs.get_mut(job_id) {
+                    if job.status == "canceled" {
+                        
+                        
+                        return (Vec::new(), 0, Some("cancelado".to_string()));
+
+                    }
+                }
+                
+            }
             let cx = (x as f64 / width as f64) * 3.5 - 2.5;
             let cy = (y as f64 / height as f64) * 2.0 - 1.0;
             let mut zx = 0.0f64;
@@ -872,7 +1115,7 @@ fn mandelbrot(
     (grid, elapsed, pgm)
 }
 
-fn matrix_multiply_hash(size: usize, seed: u64) -> String {
+fn matrix_multiply_hash(size: usize, seed: u64, job_id: &str,state: &SharedState) -> String {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut a = vec![0f64; size * size];
     let mut b = vec![0f64; size * size];
@@ -884,6 +1127,17 @@ fn matrix_multiply_hash(size: usize, seed: u64) -> String {
     }
     let mut c = vec![0f64; size * size];
     for i in 0..size {
+        {
+            let mut st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get_mut(job_id) {
+                if job.status == "canceled" {
+                    
+                    
+                    return "Cancelado".to_string(); // Termina la comprobación si se ha cancelado
+                }
+            }
+            
+        }
         for k in 0..size {
             let aik = a[i * size + k];
             for j in 0..size {
@@ -898,7 +1152,7 @@ fn matrix_multiply_hash(size: usize, seed: u64) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn sort_file(path: &str, algo: &str) -> Result<(String, usize), String> {
+fn sort_file(path: &str, algo: &str, job_id: &str,state: &SharedState) -> Result<(String, usize), String> {
     let file = File::open(path).map_err(|e| format!("unable to open {}: {}", path, e))?;
     let reader = BufReader::new(file);
     let mut values: Vec<i64> = reader
@@ -926,6 +1180,18 @@ fn sort_file(path: &str, algo: &str) -> Result<(String, usize), String> {
     let mut out = File::create(&sorted_path)
         .map_err(|e| format!("unable to create {}: {}", sorted_path, e))?;
     for (idx, value) in values.iter().enumerate() {
+        {
+            let mut st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get_mut(job_id) {
+                if job.status == "canceled" {
+                    
+                    
+                    return Ok(("cancelado".to_string(), 0)); // ejemplo: 0 para tamaño nulo
+
+                }
+            }
+            
+        }
         if idx > 0 {
             writeln!(out).map_err(|e| format!("write error: {}", e))?;
         }
@@ -997,7 +1263,7 @@ fn partition(values: &mut [i64]) -> usize {
     i
 }
 
-fn word_count(path: &str) -> Result<Value, String> {
+fn word_count(path: &str, job_id: &str,state: &SharedState) -> Result<Value, String> {
     let file = File::open(path).map_err(|e| format!("unable to open {}: {}", path, e))?;
     let mut reader = BufReader::new(file);
     let mut bytes = 0usize;
@@ -1005,6 +1271,19 @@ fn word_count(path: &str) -> Result<Value, String> {
     let mut words = 0usize;
     let mut buf = String::new();
     loop {
+        {
+            let mut st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get_mut(job_id) {
+                if job.status == "canceled" {
+                    
+                    
+                    return Ok(json!({
+                            "state": "canceled"
+                        }))
+                }
+            }
+            
+        }
         buf.clear();
         let n = reader
             .read_line(&mut buf)
@@ -1024,12 +1303,25 @@ fn word_count(path: &str) -> Result<Value, String> {
     }))
 }
 
-fn grep_file(path: &str, regex: &Regex) -> Result<Value, String> {
+fn grep_file(path: &str, regex: &Regex, job_id: &str,state: &SharedState) -> Result<Value, String> {
     let file = File::open(path).map_err(|e| format!("unable to open {}: {}", path, e))?;
     let reader = BufReader::new(file);
     let mut matches = 0usize;
     let mut first_lines = Vec::new();
     for line in reader.lines() {
+        {
+            let mut st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get_mut(job_id) {
+                if job.status == "canceled" {
+                    
+                    
+                    return Ok(json!({
+                            "state": "canceled"
+                        }))
+                }
+            }
+            
+        }
         let line = line.map_err(|e| format!("read error: {}", e))?;
         if regex.is_match(&line) {
             matches += 1;
@@ -1046,7 +1338,7 @@ fn grep_file(path: &str, regex: &Regex) -> Result<Value, String> {
     }))
 }
 
-fn compress_file(path: &str, codec: &str) -> Result<Value, String> {
+fn compress_file(path: &str, codec: &str, job_id: &str,state: &SharedState) -> Result<Value, String> {
     let mut input = File::open(path).map_err(|e| format!("unable to open {}: {}", path, e))?;
     let mut contents = Vec::new();
     input
@@ -1089,11 +1381,22 @@ fn compress_file(path: &str, codec: &str) -> Result<Value, String> {
     }))
 }
 
-fn hash_file(path: &str) -> Result<String, String> {
+fn hash_file(path: &str, job_id: &str,state: &SharedState) -> Result<String, String> {
     let mut file = File::open(path).map_err(|e| format!("unable to open {}: {}", path, e))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
+        {
+            let mut st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get_mut(job_id) {
+                if job.status == "canceled" {
+                    
+                    
+                    return Ok("cancelado".to_string()); 
+                }
+            }
+            
+        }
         let n = file
             .read(&mut buf)
             .map_err(|e| format!("read error: {}", e))?;

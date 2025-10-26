@@ -224,7 +224,13 @@ fn main() -> io::Result<()> {
                     }
                 };
                 println!("Nuevo cliente conectado: {:?}", stream.peer_addr()?);
-                //Convierte la solicitud en string
+                
+                match state.try_lock() {
+                    Ok(_) => println!("🔓 El lock está libre (se obtuvo con éxito)"),
+                    Err(std::sync::TryLockError::WouldBlock) => println!("🔒 El lock está actualmente bloqueado por otro hilo"),
+                    Err(e) => println!("Error al intentar bloquear: {:?}", e),
+                }
+                    //Convierte la solicitud en string
                 let request = String::from_utf8_lossy(&data[..n]);
                 //Lee la primera linea de la solicitud que es donde se encuentran los datos
                 let request_first_line = request.lines().next().unwrap_or("");
