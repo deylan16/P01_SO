@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::net::TcpStream;
-
+use crate::control::{ SharedState};
+use serde_json::{Value, json};
 #[derive(Clone)]
 pub struct ResponseMeta {
     pub request_id: String,
@@ -45,37 +46,86 @@ fn send_response(mut stream: TcpStream, status_line: &str, body: &str, meta: &Re
 }
 
 /// 400 - Bad Request
-pub fn error400(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn error400(stream: TcpStream, explain: &str, meta: &ResponseMeta, job_id: &str,state: &SharedState) {
+    if job_id != "" {
+        let mut state = state.lock().unwrap();
+        if let Some(job) = state.jobs.get_mut(job_id) {
+            job.status = "error".to_string();
+            job.error_message = explain.to_string();
+        }
+    }
     send_response(stream, "HTTP/1.0 400 Bad Request", explain, meta);
 }
 
 /// 404 - Not Found
-pub fn error404(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn error404(stream: TcpStream, explain: &str, meta: &ResponseMeta, job_id: &str,state: &SharedState) {
+    if job_id != "" {
+        let mut state = state.lock().unwrap();
+        if let Some(job) = state.jobs.get_mut(job_id) {
+            job.status = "error".to_string();
+            job.error_message = explain.to_string();
+        }
+    }
     send_response(stream, "HTTP/1.0 404 Not Found", explain, meta);
 }
 
 /// 409 - Conflict
-pub fn error409(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn error409(stream: TcpStream, explain: &str, meta: &ResponseMeta, job_id: &str,state: &SharedState) {
+    if job_id != "" {
+        let mut state = state.lock().unwrap();
+        if let Some(job) = state.jobs.get_mut(job_id) {
+            job.status = "error".to_string();
+            job.error_message = explain.to_string();
+        }
+    }
     send_response(stream, "HTTP/1.0 409 Conflict", explain, meta);
 }
 
 /// 429 - Too Many Requests
-pub fn error429(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn error429(stream: TcpStream, explain: &str, meta: &ResponseMeta, job_id: &str,state: &SharedState) {
+    if job_id != "" {
+        let mut state = state.lock().unwrap();
+        if let Some(job) = state.jobs.get_mut(job_id) {
+            job.status = "error".to_string();
+            job.error_message = explain.to_string();
+        }
+    }
     send_response(stream, "HTTP/1.0 429 Too Many Requests", explain, meta);
 }
 
 /// 500 - Internal Server Error
-pub fn error500(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn error500(stream: TcpStream, explain: &str, meta: &ResponseMeta, job_id: &str,state: &SharedState) {
+    if job_id != "" {
+        let mut state = state.lock().unwrap();
+        if let Some(job) = state.jobs.get_mut(job_id) {
+            job.status = "error".to_string();
+            job.error_message = explain.to_string();
+        }
+    }
     send_response(stream, "HTTP/1.0 500 Internal Server Error", explain, meta);
 }
 
 /// 503 - Service Unavailable
-pub fn error503(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn error503(stream: TcpStream, explain: &str, meta: &ResponseMeta, job_id: &str,state: &SharedState) {
+    if job_id != "" {
+        let mut state = state.lock().unwrap();
+        if let Some(job) = state.jobs.get_mut(job_id) {
+            job.status = "error".to_string();
+            job.error_message = explain.to_string();
+        }
+    }
     send_response(stream, "HTTP/1.0 503 Service Unavailable", explain, meta);
 }
 
 /// 200 - OK
-pub fn res200(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn res200(stream: TcpStream, explain: &str, meta: &ResponseMeta, job_id: &str,state: &SharedState) {
+    if job_id != "" {
+        let mut state = state.lock().unwrap();
+        if let Some(job) = state.jobs.get_mut(job_id) {
+            job.status = "completed".to_string();
+            job.error_message = "".to_string();
+        }
+    }
     send_response(stream, "HTTP/1.0 200 OK", explain, meta);
 }
 
@@ -108,7 +158,15 @@ fn send_response_with_ct(
 }
 
 // 200 OK con JSON
-pub fn res200_json(stream: TcpStream, body: &str, meta: &ResponseMeta) {
+pub fn res200_json(stream: TcpStream, body: &str, meta: &ResponseMeta, job_id: &str,state: &SharedState) {
+    if job_id != "" {
+        let mut state = state.lock().unwrap();
+        if let Some(job) = state.jobs.get_mut(job_id) {
+            job.status = "completed".to_string();
+            job.error_message = "".to_string();
+            job.result = serde_json::from_str(body).unwrap_or(Value::Null);
+        }
+    }
     send_response_with_ct(
         stream,
         "HTTP/1.0 200 OK",

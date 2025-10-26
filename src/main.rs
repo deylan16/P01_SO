@@ -171,7 +171,7 @@ fn main() -> io::Result<()> {
                     if !handled {
                         let message =
                             format!("Ejecutando {} en el worker {:?}", &task.path_and_args, tid);
-                        res200(task.stream.try_clone().unwrap(), &message, &meta);
+                        res200(task.stream.try_clone().unwrap(), &message, &meta, &task.job_id, &state_clone);
                     }
 
                     let elapsed = task.dispatched_at.elapsed().as_millis() as u128;
@@ -219,7 +219,7 @@ fn main() -> io::Result<()> {
                 let n = match stream.read(&mut data) {
                     Ok(n) if n > 0 => n,
                     _ => {
-                        error400(stream, "Bad request", &main_meta);
+                        error400(stream, "Bad request", &main_meta, "", &state);
                         continue;
                     }
                 };
@@ -232,7 +232,7 @@ fn main() -> io::Result<()> {
                 let components: Vec<&str> = request_first_line.split_whitespace().collect();
                 //Se verifica que tenga los datos requeridos
                 if components.len() < 2 {
-                    error400(stream, "Bad request", &main_meta);
+                    error400(stream, "Bad request", &main_meta, "", &state);
                     continue;
                 }
                 //Almacena la ruta del cliente solicitada
@@ -262,7 +262,7 @@ fn main() -> io::Result<()> {
                     })
                     .to_string();
 
-                    res200_json(stream, &body, &main_meta);
+                    res200_json(stream, &body, &main_meta, "", &state);
                     continue; // importante: no encolar esta solicitud
                 }
 
@@ -314,7 +314,7 @@ fn main() -> io::Result<()> {
                             //Envia la tarea al worker
                             
                             if tx.send(task).is_err() {
-                                error500(stream, "Error despachando tarea", &main_meta);
+                                error500(stream, "Error despachando tarea", &main_meta, "", &state);
                             } else {
                                 let mut st = state.lock().unwrap();
                                 st.record_dispatch(path);
@@ -324,12 +324,12 @@ fn main() -> io::Result<()> {
                             error500(
                                 stream,
                                 &format!("No se pudo clonar el socket: {}", e),
-                                &main_meta,
+                                &main_meta, "", &state
                             );
                         }
                     }
                 } else {
-                    error404(stream, path_and_args, &main_meta);
+                    error404(stream, path_and_args, &main_meta, "", &state);
                 }
             }
             Err(e) => {

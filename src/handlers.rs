@@ -44,9 +44,10 @@ pub fn handle_command(
                         "reversed": reversed,
                         "length": text.chars().count()
                     }),
+                    job_id,state
                 );
             } else {
-                error400(stream_clone(stream), "missing 'text' parameter", meta);
+                error400(stream_clone(stream), "missing 'text' parameter", meta, job_id,state);
             }
             true
         }
@@ -60,9 +61,10 @@ pub fn handle_command(
                         "upper": text.to_uppercase(),
                         "length": text.chars().count()
                     }),
+                    job_id,state
                 );
             } else {
-                error400(stream_clone(stream), "missing 'text' parameter", meta);
+                error400(stream_clone(stream), "missing 'text' parameter", meta, job_id,state);
             }
             true
         }
@@ -74,10 +76,10 @@ pub fn handle_command(
             {
                 Some(n) if n <= 93 => {
                     let value = fibonacci(n);
-                    respond_json(stream, meta, json!({"num": n, "value": value}));
+                    respond_json(stream, meta, json!({"num": n, "value": value}), job_id,state);
                 }
-                Some(_) => error400(stream_clone(stream), "num exceeds safe range (<=93)", meta),
-                None => error400(stream_clone(stream), "invalid or missing 'num'", meta),
+                Some(_) => error400(stream_clone(stream), "num exceeds safe range (<=93)", meta, job_id,state),
+                None => error400(stream_clone(stream), "invalid or missing 'num'", meta, job_id,state),
             }
             true
         }
@@ -85,7 +87,7 @@ pub fn handle_command(
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(n) if !n.is_empty() => n,
                 _ => {
-                    error400(stream_clone(stream), "missing 'name' parameter", meta);
+                    error400(stream_clone(stream), "missing 'name' parameter", meta, job_id,state);
                     return true;
                 }
             };
@@ -99,6 +101,7 @@ pub fn handle_command(
                     stream_clone(stream),
                     "repeat must be between 1 and 10000",
                     meta,
+                    job_id,state
                 );
                 return true;
             }
@@ -109,6 +112,7 @@ pub fn handle_command(
                         stream_clone(stream),
                         &format!("unable to create {}: {}", name, err),
                         meta,
+                        job_id,state
                     );
                     return true;
                 }
@@ -121,7 +125,7 @@ pub fn handle_command(
                 }
                 let bytes = chunk.as_bytes();
                 if file.write_all(bytes).is_err() {
-                    error500(stream_clone(stream), "failed to write file", meta);
+                    error500(stream_clone(stream), "failed to write file", meta, job_id,state);
                     return true;
                 }
                 written += bytes.len();
@@ -130,20 +134,22 @@ pub fn handle_command(
                 stream,
                 meta,
                 json!({"file": name, "bytes_written": written, "repeat": repeat}),
+                job_id,state
             );
             true
         }
         "/deletefile" => {
             match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(name) => match fs::remove_file(name) {
-                    Ok(_) => respond_json(stream, meta, json!({"file": name, "deleted": true})),
+                    Ok(_) => respond_json(stream, meta, json!({"file": name, "deleted": true}), job_id,state),
                     Err(err) => error500(
                         stream_clone(stream),
                         &format!("unable to delete {}: {}", name, err),
                         meta,
+                        job_id,state
                     ),
                 },
-                None => error400(stream_clone(stream), "missing 'name' parameter", meta),
+                None => error400(stream_clone(stream), "missing 'name' parameter", meta, job_id,state),
             }
             true
         }
@@ -157,6 +163,7 @@ pub fn handle_command(
                     stream_clone(stream),
                     "count must be between 1 and 1024",
                     meta,
+                    job_id,state
                 );
                 return true;
             }
@@ -169,7 +176,7 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(100);
             if min > max {
-                error400(stream_clone(stream), "min must be <= max", meta);
+                error400(stream_clone(stream), "min must be <= max", meta, job_id,state);
                 return true;
             }
             let mut rng = thread_rng();
@@ -182,7 +189,7 @@ pub fn handle_command(
                     "min": min,
                     "max": max,
                     "values": values
-                }),
+                }),job_id,state
             );
             true
         }
@@ -192,10 +199,10 @@ pub fn handle_command(
                 respond_json(
                     stream,
                     meta,
-                    json!({"text": text, "algorithm": "sha256", "digest": digest}),
+                    json!({"text": text, "algorithm": "sha256", "digest": digest}), job_id,state
                 );
             } else {
-                error400(stream_clone(stream), "missing 'text' parameter", meta);
+                error400(stream_clone(stream), "missing 'text' parameter", meta, job_id,state);
             }
             true
         }
@@ -224,7 +231,7 @@ pub fn handle_command(
                 "GET /hashfile?name=..&algo=sha256",
                 "GET /metrics",
             ];
-            respond_json(stream, meta, json!({"commands": commands}));
+            respond_json(stream, meta, json!({"commands": commands}), job_id,state);
             true
         }
         "/timestamp" => {
@@ -232,7 +239,7 @@ pub fn handle_command(
             respond_json(
                 stream,
                 meta,
-                json!({"iso8601": now.to_rfc3339(), "epoch_ms": now.timestamp_millis()}),
+                json!({"iso8601": now.to_rfc3339(), "epoch_ms": now.timestamp_millis()}), job_id,state
             );
             true
         }
@@ -246,7 +253,7 @@ pub fn handle_command(
                 .unwrap_or(0);
             sleep(Duration::from_secs(seconds));
             
-            respond_json(stream, meta, json!({"slept_seconds": seconds}));
+            respond_json(stream, meta, json!({"slept_seconds": seconds}), job_id,state);
             {
                 let mut st = state.lock().unwrap();
                 st.jobs.get_mut(job_id).map(|job| {
@@ -274,6 +281,7 @@ pub fn handle_command(
                 stream,
                 meta,
                 json!({"task": task, "seconds": seconds, "iterations": counter}),
+                job_id,state
             );
             true
         }
@@ -302,6 +310,7 @@ pub fn handle_command(
                 stream,
                 meta,
                 json!({"tasks": tasks, "sleep_ms": sleep_ms, "elapsed_ms": elapsed}),
+                job_id,state
             );
             true
         }
@@ -320,9 +329,10 @@ pub fn handle_command(
                             "method": "trial-division",
                             "elapsed_ms": elapsed
                         }),
+                        job_id,state
                     );
                 }
-                None => error400(stream_clone(stream), "invalid or missing 'n'", meta),
+                None => error400(stream_clone(stream), "invalid or missing 'n'", meta, job_id,state),
             }
             true
         }
@@ -340,9 +350,10 @@ pub fn handle_command(
                             "factors": factors,
                             "elapsed_ms": elapsed
                         }),
+                        job_id,state
                     );
                 }
-                None => error400(stream_clone(stream), "invalid or missing 'n'", meta),
+                None => error400(stream_clone(stream), "invalid or missing 'n'", meta, job_id,state),
             }
             true
         }
@@ -357,6 +368,7 @@ pub fn handle_command(
                     stream_clone(stream),
                     &format!("digits must be between 1 and {}", MAX_PI_DIGITS),
                     meta,
+                    job_id,state
                 );
                 return true;
             }
@@ -367,6 +379,7 @@ pub fn handle_command(
                 stream,
                 meta,
                 json!({"digits": digits, "pi": pi, "elapsed_ms": elapsed}),
+                job_id,state
             );
             true
         }
@@ -385,7 +398,7 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(50);
             if width == 0 || height == 0 || width > 1000 || height > 1000 || max_iter == 0 {
-                error400(stream_clone(stream), "invalid size or max_iter", meta);
+                error400(stream_clone(stream), "invalid size or max_iter", meta, job_id,state);
                 return true;
             }
             let (iters, elapsed, pgm_written) =
@@ -401,6 +414,7 @@ pub fn handle_command(
                     "file": pgm_written,
                     "iterations": iters
                 }),
+                job_id,state
             );
             true
         }
@@ -411,7 +425,7 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(100);
             if size == 0 || size > 600 {
-                error400(stream_clone(stream), "size must be between 1 and 600", meta);
+                error400(stream_clone(stream), "size must be between 1 and 600", meta, job_id,state);
                 return true;
             }
             let seed = qmap
@@ -430,6 +444,7 @@ pub fn handle_command(
                     "result_sha256": hash,
                     "elapsed_ms": elapsed
                 }),
+                job_id,state
             );
             true
         }
@@ -437,13 +452,13 @@ pub fn handle_command(
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) if !path.is_empty() => path,
                 _ => {
-                    error400(stream_clone(stream), "missing 'name' parameter", meta);
+                    error400(stream_clone(stream), "missing 'name' parameter", meta, job_id,state);
                     return true;
                 }
             };
             let algo = qmap.get("algo").map(String::as_str).unwrap_or("quick");
             if !matches!(algo, "quick" | "merge") {
-                error400(stream_clone(stream), "algo must be quick or merge", meta);
+                error400(stream_clone(stream), "algo must be quick or merge", meta, job_id,state);
                 return true;
             }
             let start = Instant::now();
@@ -460,19 +475,20 @@ pub fn handle_command(
                             "items": count,
                             "elapsed_ms": elapsed
                         }),
+                        job_id,state
                     );
                 }
-                Err(err) => error500(stream_clone(stream), &err, meta),
+                Err(err) => error500(stream_clone(stream), &err, meta, job_id,state),
             }
             true
         }
         "/wordcount" => {
             match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(name) => match word_count(name) {
-                    Ok(stats) => respond_json(stream, meta, stats),
-                    Err(err) => error500(stream_clone(stream), &err, meta),
+                    Ok(stats) => respond_json(stream, meta, stats, job_id,state),
+                    Err(err) => error500(stream_clone(stream), &err, meta, job_id,state),
                 },
-                None => error400(stream_clone(stream), "missing 'name' parameter", meta),
+                None => error400(stream_clone(stream), "missing 'name' parameter", meta, job_id,state),
             }
             true
         }
@@ -480,14 +496,14 @@ pub fn handle_command(
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) => path,
                 None => {
-                    error400(stream_clone(stream), "missing 'name' parameter", meta);
+                    error400(stream_clone(stream), "missing 'name' parameter", meta, job_id,state);
                     return true;
                 }
             };
             let pattern = match qmap.get("pattern") {
                 Some(pat) => pat,
                 None => {
-                    error400(stream_clone(stream), "missing 'pattern'", meta);
+                    error400(stream_clone(stream), "missing 'pattern'", meta, job_id,state);
                     return true;
                 }
             };
@@ -498,13 +514,14 @@ pub fn handle_command(
                         stream_clone(stream),
                         &format!("invalid regex: {}", err),
                         meta,
+                        job_id,state
                     );
                     return true;
                 }
             };
             match grep_file(name, &regex) {
-                Ok(value) => respond_json(stream, meta, value),
-                Err(err) => error500(stream_clone(stream), &err, meta),
+                Ok(value) => respond_json(stream, meta, value, job_id,state),
+                Err(err) => error500(stream_clone(stream), &err, meta, job_id,state),
             }
             true
         }
@@ -512,18 +529,18 @@ pub fn handle_command(
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) => path,
                 None => {
-                    error400(stream_clone(stream), "missing 'name' parameter", meta);
+                    error400(stream_clone(stream), "missing 'name' parameter", meta, job_id,state);
                     return true;
                 }
             };
             let codec = qmap.get("codec").map(String::as_str).unwrap_or("gzip");
             if !matches!(codec, "gzip" | "xz") {
-                error400(stream_clone(stream), "codec must be gzip or xz", meta);
+                error400(stream_clone(stream), "codec must be gzip or xz", meta, job_id,state);
                 return true;
             }
             match compress_file(name, codec) {
-                Ok(value) => respond_json(stream, meta, value),
-                Err(err) => error500(stream_clone(stream), &err, meta),
+                Ok(value) => respond_json(stream, meta, value, job_id,state),
+                Err(err) => error500(stream_clone(stream), &err, meta, job_id,state),
             }
             true
         }
@@ -531,13 +548,13 @@ pub fn handle_command(
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) => path,
                 None => {
-                    error400(stream_clone(stream), "missing 'name' parameter", meta);
+                    error400(stream_clone(stream), "missing 'name' parameter", meta, job_id,state);
                     return true;
                 }
             };
             let algo = qmap.get("algo").map(String::as_str).unwrap_or("sha256");
             if algo != "sha256" {
-                error400(stream_clone(stream), "unsupported algo (only sha256)", meta);
+                error400(stream_clone(stream), "unsupported algo (only sha256)", meta, job_id,state);
                 return true;
             }
             match hash_file(name) {
@@ -545,8 +562,9 @@ pub fn handle_command(
                     stream,
                     meta,
                     json!({"file": name, "algorithm": "sha256", "digest": hash}),
+                    job_id,state
                 ),
-                Err(err) => error500(stream_clone(stream), &err, meta),
+                Err(err) => error500(stream_clone(stream), &err, meta, job_id,state),
             }
             true
         }
@@ -618,7 +636,7 @@ pub fn handle_command(
                             //Envia la tarea al worker
                             
                             if tx.send(task).is_err() {
-                                error500(stream.try_clone().unwrap(), "Error despachando tarea", meta);
+                                error500(stream.try_clone().unwrap(), "Error despachando tarea", meta, "", state);
                             } else {
                                 let mut st = state.lock().unwrap();
                                 st.record_dispatch(path);
@@ -628,12 +646,12 @@ pub fn handle_command(
                             error500(
                                 stream_clone(stream),
                                 &format!("No se pudo clonar el socket: {}", e),
-                                meta,
+                                meta, "", state
                             );
                         }
                     }
                 } else {
-                    error404(stream_clone(stream), &qmap_to_string(&qmap), meta);
+                    error404(stream_clone(stream), &qmap_to_string(&qmap), meta, "", state);
                 }
             let result = {
                 json!({
@@ -642,7 +660,7 @@ pub fn handle_command(
 
                 })
             };
-            respond_json(stream, meta, result);
+            respond_json(stream, meta, result, job_id,state);
             true
         }
         "/jobs/status" => {
@@ -657,14 +675,15 @@ pub fn handle_command(
                         "job_id": job.id.to_string(),
                         "status": job.status.to_string(),
                         "result": job.result.clone(),
+                        "error_message": job.error_message.to_string(),
 
                     })
                 };
                 
-                respond_json(stream, meta, result);
+                respond_json(stream, meta, result, job_id,state);
             }
             else {
-                error400(stream_clone(stream), "missing 'ID' parameter", meta);
+                error400(stream_clone(stream), "missing 'ID' parameter", meta, job_id,state);
             }
             true
         }
@@ -685,16 +704,16 @@ pub fn handle_command(
                     "latency_ms": st.latency_snapshot()
                 })
             };
-            respond_json(stream, meta, snapshot);
+            respond_json(stream, meta, snapshot, job_id,state);
             true
         }
         _ => false,
     }
 }
 
-fn respond_json(stream: &TcpStream, meta: &ResponseMeta, value: Value) {
+fn respond_json(stream: &TcpStream, meta: &ResponseMeta, value: Value, job_id: &str,state: &SharedState) {
     let body = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
-    res200_json(stream_clone(stream), &body, meta);
+    res200_json(stream_clone(stream), &body, meta, job_id, state);
 }
 
 fn stream_clone(stream: &TcpStream) -> TcpStream {
