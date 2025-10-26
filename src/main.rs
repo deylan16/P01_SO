@@ -143,6 +143,7 @@ fn main() -> io::Result<()> {
                         "Worker {:?} recibió tarea: {}",
                         tid, task.path_and_args
                     );
+                    
                     //El worker se pone como ocupado
                     {
                         let mut st = state_clone.lock().unwrap();
@@ -164,10 +165,7 @@ fn main() -> io::Result<()> {
                     };
 
                     let meta = ResponseMeta::new(task.request_id.clone(), worker_label.clone());
-                    println!(
-                        "Worker {:?} manejando comando: {}",
-                        tid, task.path_and_args
-                    );
+                    
                     let handled = handle_command(&path, &qmap, &task.stream, &meta, &state_clone, &task.job_id);
 
                     if !handled {
@@ -271,28 +269,35 @@ fn main() -> io::Result<()> {
                 
 
                 // Verifica el comando existe en el pool de workers por comando
-                let senders = {
+                let tx = {
                     let mut st = state.lock().unwrap();
 
-                    // Obtengo senders primero, como copia de referencia
-                    let senders = st.pool_of_workers_for_command.get(path).cloned(); // clonado o con Arc
-                    senders
-                };
-                if let Some(senders) = senders {
-                    //Obtiene el indice el worker que sigue para asignar
-                    
-                    
-                    let tx = {
-                        let mut st = state.lock().unwrap();
-                        let idx  = st.counters.get_mut(path).unwrap();
-                        
-                        
-                        //Obtiene el canal del worker para mandar la tarea
+                    // Obtiene referencia directa (no clonada)
+                    if let Some(senders) = st.pool_of_workers_for_command.get(path) {
+                        let idx = st.counters.get(path).unwrap();
+
+                        // Obtiene canal del worker actual
                         let tx = &senders[*idx];
-                        //Incrementa el indice del siquiente worker
-                        *idx = (*idx + 1) % workers_for_command;
-                        tx
-                    };
+
+                        Some(tx.clone()) // cloná el Sender individual, no todo el Vec
+                    } else {
+                        None
+                    }
+                };
+                {
+                    let mut st = state.lock().unwrap();
+                    let idx = st.counters.get_mut(path).unwrap();
+                    // Incrementa el índice
+                    println!(
+                        "Current worker index for command {}: {}",
+                        path, *idx
+                    );
+                    *idx = (*idx + 1) % workers_for_command;
+                    println!("Dispatching to worker index {} for command {}", idx, path);
+                }
+
+                if let Some(tx) = tx {
+                    
                     //Clona el socket y valida si funciona
                    
                     match stream.try_clone() {

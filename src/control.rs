@@ -6,6 +6,7 @@ use std::net::{TcpStream};
 use std::sync::mpsc::{self, Sender};
 const MAX_LATENCY_SAMPLES: usize = 128;
 use std::time::Instant;
+use serde_json::{Value, json};
 #[derive(Serialize, Clone)]
 pub struct WorkerInfo {
     pub command: String,
@@ -26,6 +27,8 @@ pub struct Task {
 pub struct Job {
     pub id: String,
     pub status: String,
+    pub error_message: String,
+    pub result: Value,
 
 }
 pub struct ServerState {

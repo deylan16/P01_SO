@@ -237,8 +237,7 @@ pub fn handle_command(
             true
         }
         "/sleep" => {
-            println!("Entrando a sleep...");
-            println!("qmap: {:?}", qmap);
+
             { let mut st = state.lock().unwrap();
               st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             let seconds = qmap
@@ -246,9 +245,15 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(0);
             sleep(Duration::from_secs(seconds));
-            { let mut st = state.lock().unwrap();
-              st.jobs.get_mut(job_id).map(|job| job.status = "done".to_string());}
+            
             respond_json(stream, meta, json!({"slept_seconds": seconds}));
+            {
+                let mut st = state.lock().unwrap();
+                st.jobs.get_mut(job_id).map(|job| {
+                    job.status = "done".to_string();
+                    job.result = json!({"slept_seconds": seconds}); // ejemplo
+                });
+            }
             true
         }
         "/simulate" => {
@@ -564,27 +569,31 @@ pub fn handle_command(
             st.jobs.insert(id_job_counter.to_string(), Job {
                 id: id_job_counter.to_string(),
                 status: "queued".to_string(),
+                error_message: "".to_string(),
+                result: Value::Null,
                 /*path_and_args: qmap_to_string(qmap),
                 stream: stream_clone(stream),
                 request_id: meta.request_id.clone(),
                 dispatched_at: Instant::now(),
                 state: "queued".to_string(),*/
             });}
+            let new_task = qmap.get("task").cloned().unwrap_or_default();
+            let new_path = format!("/{}", new_task);
             let senders = {
                     let mut st = state.lock().unwrap();
 
                     // Obtengo senders primero, como copia de referencia
-                    let senders = st.pool_of_workers_for_command.get(path).cloned(); // clonado o con Arc
+                    let senders = st.pool_of_workers_for_command.get(&new_path).cloned(); // clonado o con Arc
                     senders
                 };
-                println!("senders for command {}: {:?}", path, senders);
+                
                 if let Some(senders) = senders {
                     //Obtiene el indice el worker que sigue para asignar
                     
                     
                     let tx = {
                         let mut st = state.lock().unwrap();
-                        let idx  = st.counters.get_mut(path).unwrap();
+                        let idx  = st.counters.get_mut(&new_path).unwrap();
                         
                         
                         //Obtiene el canal del worker para mandar la tarea
@@ -607,7 +616,7 @@ pub fn handle_command(
                                 job_id: id_job_counter.to_string(),
                             };
                             //Envia la tarea al worker
-                            println!("Enviando tarea al worker del comando {}", path);
+                            
                             if tx.send(task).is_err() {
                                 error500(stream.try_clone().unwrap(), "Error despachando tarea", meta);
                             } else {
@@ -647,6 +656,7 @@ pub fn handle_command(
                     json!({
                         "job_id": job.id.to_string(),
                         "status": job.status.to_string(),
+                        "result": job.result.clone(),
 
                     })
                 };
