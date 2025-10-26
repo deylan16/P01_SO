@@ -97,26 +97,6 @@ head -n 3 "$TMP_PGM" || true
 banner "MATRIXMUL n=120 "
 curl -s "$BASE/matrixmul?n=120" ; echo
 
-banner "JOB sleep via submit"
-JOB_RESPONSE=$(curl -sG --data-urlencode "task=sleep" --data-urlencode "seconds=2" "$BASE/jobs/submit")
-echo "$JOB_RESPONSE"
-JOB_ID=$(echo "$JOB_RESPONSE" | jq -r '.job_id // empty')
-if [ -n "$JOB_ID" ]; then
-  for attempt in {1..10}; do
-    STATUS_RESPONSE=$(curl -sG --data-urlencode "id=$JOB_ID" "$BASE/jobs/status")
-    echo "status[$attempt]: $STATUS_RESPONSE"
-    STATUS_VALUE=$(echo "$STATUS_RESPONSE" | jq -r '.status // empty')
-    if [ "$STATUS_VALUE" = "done" ] || [ "$STATUS_VALUE" = "failed" ] || [ "$STATUS_VALUE" = "cancelled" ]; then
-      break
-    fi
-    sleep 1
-  done
-  banner "JOB RESULT $JOB_ID"
-  curl -sG --data-urlencode "id=$JOB_ID" "$BASE/jobs/result" ; echo
-else
-  echo "No se pudo obtener job_id"
-fi
-
 banner "METRICS"
 curl -s "$BASE/metrics" ; echo
 

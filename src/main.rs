@@ -1,18 +1,18 @@
 mod control;
 mod errors;
 mod handlers;
-use control::{new_state, WorkerInfo, Task};
+use control::{WorkerInfo, new_state, Task};
 use handlers::handle_command;
 
 use std::collections::HashMap;
 use std::io::{self, Read};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Instant;
 
-use errors::{error400, error404, error500, res200, res200_json, ResponseMeta};
+use errors::{ResponseMeta, error400, error404, error500, res200, res200_json};
 
 use chrono::Utc;
 use serde_json::json;
@@ -25,9 +25,13 @@ fn next_request_id() -> String {
     format!("req-{}", id)
 }
 
+
+
 fn main() -> io::Result<()> {
     // Estado compartido
     let state = new_state();
+
+
 
     let listener = TcpListener::bind("127.0.0.1:8080")?;
     println!("Servidor iniciado en http://127.0.0.1:8080");
@@ -58,6 +62,10 @@ fn main() -> io::Result<()> {
         "/compress",
         "/hashfile",
         "/metrics",
+        "/jobs/submit",
+        "/jobs/status",
+        "/jobs/result",
+        "/jobs/cancel",
     ];
     //Cantidad de hilos por comando
     let workers_for_command = {
@@ -97,6 +105,38 @@ fn main() -> io::Result<()> {
                     });
                 }
 
+                // --- Helper local: parsea "a=b&c=d" haciendo también + -> ' ' ---
+                let parse_query = |qs: &str| -> std::collections::HashMap<String, String> {
+                    let mut m = std::collections::HashMap::new();
+                    for pair in qs.split('&') {
+                        if pair.is_empty() {
+                            continue;
+                        }
+                        let mut it = pair.splitn(2, '=');
+
+                        // valores crudos
+                        let k0 = it.next().unwrap_or("");
+                        let v0 = it.next().unwrap_or("");
+
+                        // '+' => espacio (form-urlencoded)
+                        let k_fixed = k0.replace('+', " ");
+                        let v_fixed = v0.replace('+', " ");
+
+                        // decodifica %xx sin violar el borrow checker
+                        let k = match decode(&k_fixed) {
+                            Ok(cow) => cow.into_owned(),
+                            Err(_) => k_fixed,
+                        };
+                        let v = match decode(&v_fixed) {
+                            Ok(cow) => cow.into_owned(),
+                            Err(_) => v_fixed,
+                        };
+
+                        m.insert(k, v);
+                    }
+                    m
+                };
+
                 //El for pasa escuchando si entra una nueva tarea al canal del worker
                 for task in rx {
                     println!(
@@ -124,35 +164,14 @@ fn main() -> io::Result<()> {
                         (p.to_string(), parse_query(q))
                     };
 
-                    let mut meta = ResponseMeta::new(task.request_id.clone(), worker_label.clone());
-                    let mut skip_execution = false;
+                    let meta = ResponseMeta::new(task.request_id.clone(), worker_label.clone());
+                    
+                    let handled = handle_command(&path, &qmap, &task.stream, &meta, &state_clone, &task.job_id);
 
-                    if !task.job_id.is_empty() {
-                        {
-                            let mut st = state_clone.lock().unwrap();
-                            if let Some(job) = st.jobs.get_mut(&task.job_id) {
-                                if job.status == "cancelled" {
-                                    skip_execution = true;
-                                } else {
-                                    job.status = "running".to_string();
-                                }
-                            }
-                        }
-                        meta = meta.with_job(state_clone.clone(), task.job_id.clone());
-                    }
-
-                    if !skip_execution {
-                        let handled =
-                            handle_command(&path, &qmap, &task.stream, &meta, &state_clone);
-
-                        if !handled {
-                            let message = format!(
-                                "Ejecutando {} en el worker {:?}",
-                                &task.path_and_args,
-                                tid
-                            );
-                            res200(task.stream.try_clone().unwrap(), &message, &meta);
-                        }
+                    if !handled {
+                        let message =
+                            format!("Ejecutando {} en el worker {:?}", &task.path_and_args, tid);
+                        res200(task.stream.try_clone().unwrap(), &message, &meta);
                     }
 
                     let elapsed = task.dispatched_at.elapsed().as_millis() as u128;
@@ -218,9 +237,7 @@ fn main() -> io::Result<()> {
                 }
                 //Almacena la ruta del cliente solicitada
                 let path_and_args = components[1];
-                let mut path_split = path_and_args.splitn(2, '?');
-                let path = path_split.next().unwrap_or("");
-                let query_str = path_split.next().unwrap_or("");
+                let path = path_and_args.splitn(2, '?').next().unwrap_or("");
 
                 // Actualizar contador global
                 {
@@ -249,17 +266,11 @@ fn main() -> io::Result<()> {
                     continue; // importante: no encolar esta solicitud
                 }
 
-                if path.starts_with("/jobs/") {
-                    let qmap = parse_query(query_str);
-                    if !handle_command(path, &qmap, &stream, &main_meta, &state) {
-                        error404(stream, path_and_args, &main_meta);
-                    }
-                    continue;
-                }
+                
 
                 // Verifica el comando existe en el pool de workers por comando
                 let tx = {
-                    let st = state.lock().unwrap();
+                    let mut st = state.lock().unwrap();
 
                     // Obtiene referencia directa (no clonada)
                     if let Some(senders) = st.pool_of_workers_for_command.get(path) {
@@ -328,22 +339,4 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
-}
-
-fn parse_query(qs: &str) -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    for pair in qs.split('&') {
-        if pair.is_empty() {
-            continue;
-        }
-        let mut it = pair.splitn(2, '=');
-        let k0 = it.next().unwrap_or("");
-        let v0 = it.next().unwrap_or("");
-        let k_fixed = k0.replace('+', " ");
-        let v_fixed = v0.replace('+', " ");
-        let k = decode(&k_fixed).map(|c| c.into_owned()).unwrap_or(k_fixed);
-        let v = decode(&v_fixed).map(|c| c.into_owned()).unwrap_or(v_fixed);
-        m.insert(k, v);
-    }
-    m
 }
