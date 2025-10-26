@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use xz2::write::XzEncoder;
 
 use crate::control::{Job, SharedState,Task};
-use crate::errors::{ResponseMeta,error404, error400, error500, res200_json};
+use crate::errors::{ResponseMeta,error404, error400, error409, error500, res200_json};
 
 const MAX_RANDOM_COUNT: u64 = 1024;
 const MAX_PI_DIGITS: usize = 1000;
@@ -30,7 +30,6 @@ pub fn handle_command(
     stream: &TcpStream,
     meta: &ResponseMeta,
     state: &SharedState,
-    job_id: &str,
 ) -> bool {
     match path {
         "/reverse" => {
@@ -237,23 +236,12 @@ pub fn handle_command(
             true
         }
         "/sleep" => {
-
-            { let mut st = state.lock().unwrap();
-              st.jobs.get_mut(job_id).map(|job| job.status = "running".to_string());}
             let seconds = qmap
                 .get("seconds")
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(0);
             sleep(Duration::from_secs(seconds));
-            
             respond_json(stream, meta, json!({"slept_seconds": seconds}));
-            {
-                let mut st = state.lock().unwrap();
-                st.jobs.get_mut(job_id).map(|job| {
-                    job.status = "done".to_string();
-                    job.result = json!({"slept_seconds": seconds}); // ejemplo
-                });
-            }
             true
         }
         "/simulate" => {
@@ -328,7 +316,7 @@ pub fn handle_command(
         }
         "/factor" => {
             match qmap.get("n").and_then(|s| s.parse::<u128>().ok()) {
-                Some(mut n) => {
+                Some(n) => {
                     let start = Instant::now();
                     let factors = factorize(n);
                     let elapsed = start.elapsed().as_millis();
@@ -552,128 +540,203 @@ pub fn handle_command(
         }
         "/jobs/submit" => {
             println!("{:#?}", qmap);
-            let workers_for_command = {
-                let st = state.lock().unwrap();
-                st.workers_for_command
-                
-            };
-            let id_job_counter = {
-                let mut st = state.lock().unwrap(); // mutable porque vamos a incrementar
-                let id = st.id_job_counter;          // guardamos el valor actual
-                st.id_job_counter += 1;              // incrementamos
-                id                                   // esto se devuelve del bloque
-            };
-            {let mut st = state.lock().unwrap();
-            
-            
-            st.jobs.insert(id_job_counter.to_string(), Job {
-                id: id_job_counter.to_string(),
-                status: "queued".to_string(),
-                error_message: "".to_string(),
-                result: Value::Null,
-                /*path_and_args: qmap_to_string(qmap),
-                stream: stream_clone(stream),
-                request_id: meta.request_id.clone(),
-                dispatched_at: Instant::now(),
-                state: "queued".to_string(),*/
-            });}
-            let new_task = qmap.get("task").cloned().unwrap_or_default();
-            let new_path = format!("/{}", new_task);
-            let senders = {
-                    let mut st = state.lock().unwrap();
-
-                    // Obtengo senders primero, como copia de referencia
-                    let senders = st.pool_of_workers_for_command.get(&new_path).cloned(); // clonado o con Arc
-                    senders
-                };
-                
-                if let Some(senders) = senders {
-                    //Obtiene el indice el worker que sigue para asignar
-                    
-                    
-                    let tx = {
-                        let mut st = state.lock().unwrap();
-                        let idx  = st.counters.get_mut(&new_path).unwrap();
-                        
-                        
-                        //Obtiene el canal del worker para mandar la tarea
-                        let tx = &senders[*idx];
-                        //Incrementa el indice del siquiente worker
-                        *idx = (*idx + 1) % workers_for_command;
-                        tx
-                    };
-                    //Clona el socket y valida si funciona
-                    
-                    match stream.try_clone() {
-                        Ok(stream_clone) => {
-                            //Crea la tarea para mandar
-                            let task = Task {
-                                path_and_args: qmap_to_string(&qmap),
-                                stream: stream_clone,
-                                request_id: meta.request_id.clone(),
-                                dispatched_at: Instant::now(),
-                                state: "queued".to_string(),
-                                job_id: id_job_counter.to_string(),
-                            };
-                            //Envia la tarea al worker
-                            
-                            if tx.send(task).is_err() {
-                                error500(stream.try_clone().unwrap(), "Error despachando tarea", meta);
-                            } else {
-                                let mut st = state.lock().unwrap();
-                                st.record_dispatch(path);
-                            }
-                        }
-                        Err(e) => {
-                            error500(
-                                stream_clone(stream),
-                                &format!("No se pudo clonar el socket: {}", e),
-                                meta,
-                            );
-                        }
-                    }
-                } else {
-                    error404(stream_clone(stream), &qmap_to_string(&qmap), meta);
+            let task_value = match qmap.get("task").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                Some(task) => task,
+                None => {
+                    error400(stream_clone(stream), "missing 'task' parameter", meta);
+                    return true;
                 }
-            let result = {
-                json!({
-                    "job_id": id_job_counter.to_string(),
-                    "status": "queued".to_string(),
-
-                })
             };
+            let target_path = normalize_task_path(task_value);
+
+            let job_id = {
+                let mut st = state.lock().unwrap();
+                if !st.pool_of_workers_for_command.contains_key(&target_path) {
+                    error404(stream_clone(stream), &target_path, meta);
+                    return true;
+                }
+                let id = st.id_job_counter;
+                st.id_job_counter += 1;
+                let job_id = id.to_string();
+                st.jobs.insert(
+                    job_id.clone(),
+                    Job {
+                        id: job_id.clone(),
+                        status: "queued".to_string(),
+                        error_message: String::new(),
+                        result: Value::Null,
+                    },
+                );
+                job_id
+            };
+
+            let tx = {
+                let mut st = state.lock().unwrap();
+                let senders = st
+                    .pool_of_workers_for_command
+                    .get(&target_path)
+                    .cloned()
+                    .unwrap_or_default();
+                if senders.is_empty() {
+                    None
+                } else {
+                    let idx = st
+                        .counters
+                        .get_mut(&target_path)
+                        .expect("missing counter for command");
+                    let sender = senders[*idx].clone();
+                    *idx = (*idx + 1) % senders.len();
+                    Some(sender)
+                }
+            };
+
+            let Some(tx) = tx else {
+                mark_job_failed(state, &job_id, "No hay workers disponibles");
+                error500(stream_clone(stream), "No hay workers disponibles", meta);
+                return true;
+            };
+
+            let path_and_args = build_task_invocation(&target_path, &qmap);
+
+            match stream.try_clone() {
+                Ok(job_stream) => {
+                    let task = Task {
+                        path_and_args,
+                        stream: job_stream,
+                        request_id: meta.request_id.clone(),
+                        dispatched_at: Instant::now(),
+                        state: "queued".to_string(),
+                        job_id: job_id.clone(),
+                    };
+
+                    if tx.send(task).is_err() {
+                        mark_job_failed(state, &job_id, "No se pudo encolar la tarea");
+                        error500(stream_clone(stream), "Error despachando tarea", meta);
+                        return true;
+                    }
+
+                    {
+                        let mut st = state.lock().unwrap();
+                        st.record_dispatch(&target_path);
+                    }
+                }
+                Err(e) => {
+                    mark_job_failed(state, &job_id, "No se pudo clonar el socket");
+                    error500(
+                        stream_clone(stream),
+                        &format!("No se pudo clonar el socket: {}", e),
+                        meta,
+                    );
+                    return true;
+                }
+            }
+
+            let result = json!({
+                "job_id": job_id,
+                "status": "queued",
+            });
             respond_json(stream, meta, result);
             true
         }
         "/jobs/status" => {
-            println!("{:#?}", qmap);
-            
+            let job_id = match extract_job_id(qmap) {
+                Ok(id) => id,
+                Err(msg) => {
+                    error400(stream_clone(stream), &msg, meta);
+                    return true;
+                }
+            };
 
-            let mut st = state.lock().unwrap();
-            if let Some(job) = st.jobs.get(qmap.get("id").unwrap_or(&"".to_string())) {
-                
-                let result = {
-                    json!({
-                        "job_id": job.id.to_string(),
-                        "status": job.status.to_string(),
-                        "result": job.result.clone(),
-
-                    })
-                };
-                
+            let st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get(&job_id) {
+                let result = json!({
+                    "job_id": job.id,
+                    "status": job.status,
+                    "result": job.result,
+                    "error": job.error_message,
+                });
                 respond_json(stream, meta, result);
-            }
-            else {
-                error400(stream_clone(stream), "missing 'ID' parameter", meta);
+            } else {
+                error404(stream_clone(stream), "job not found", meta);
             }
             true
         }
         "/jobs/result" => {
-            println!("{:#?}", qmap);
+            let job_id = match extract_job_id(qmap) {
+                Ok(id) => id,
+                Err(msg) => {
+                    error400(stream_clone(stream), &msg, meta);
+                    return true;
+                }
+            };
+
+            let st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get(&job_id) {
+                if job.status == "done" {
+                    respond_json(
+                        stream,
+                        meta,
+                        json!({
+                            "job_id": job.id,
+                            "result": job.result,
+                        }),
+                    );
+                } else if job.status == "failed" {
+                    error500(
+                        stream_clone(stream),
+                        &format!("job {} failed: {}", job.id, job.error_message),
+                        meta,
+                    );
+                } else {
+                    error409(stream_clone(stream), "job not finished", meta);
+                }
+            } else {
+                error404(stream_clone(stream), "job not found", meta);
+            }
             true
         }
         "/jobs/cancel" => {
-            println!("{:#?}", qmap);
+            let job_id = match extract_job_id(qmap) {
+                Ok(id) => id,
+                Err(msg) => {
+                    error400(stream_clone(stream), &msg, meta);
+                    return true;
+                }
+            };
+
+            let mut st = state.lock().unwrap();
+            if let Some(job) = st.jobs.get_mut(&job_id) {
+                match job.status.as_str() {
+                    "queued" => {
+                        job.status = "cancelled".to_string();
+                        job.error_message = "job cancelled".to_string();
+                        job.result = Value::Null;
+                        respond_json(
+                            stream,
+                            meta,
+                            json!({
+                                "job_id": job.id,
+                                "status": job.status,
+                            }),
+                        );
+                    }
+                    "cancelled" => {
+                        respond_json(
+                            stream,
+                            meta,
+                            json!({
+                                "job_id": job.id,
+                                "status": job.status,
+                            }),
+                        );
+                    }
+                    _ => {
+                        error409(stream_clone(stream), "job can no longer be cancelled", meta);
+                    }
+                }
+            } else {
+                error404(stream_clone(stream), "job not found", meta);
+            }
             true
         }
         "/metrics" => {
@@ -710,21 +773,42 @@ fn fibonacci(n: u64) -> u128 {
     }
     a
 }
-fn qmap_to_string(qmap: &HashMap<String, String>) -> String {
-    // 1️⃣ Tomar el valor de la clave "task"
-    let task = qmap.get("task").cloned().unwrap_or_default();
-
-    // 2️⃣ Filtrar las demás claves y construir key=value
-    let params: Vec<String> = qmap.iter()
-        .filter(|(k, _)| k != &"task")  // excluye "task"
+fn build_task_invocation(task_path: &str, qmap: &HashMap<String, String>) -> String {
+    let mut params: Vec<String> = qmap
+        .iter()
+        .filter(|(k, _)| k.as_str() != "task")
         .map(|(k, v)| format!("{}={}", k, v))
         .collect();
+    params.sort();
 
-    // 3️⃣ Unir todo con comas
     if params.is_empty() {
-        format!("{}", task)
+        task_path.to_string()
     } else {
-        format!("/{}?{}", task, params.join(","))
+        format!("{}?{}", task_path, params.join("&"))
+    }
+}
+
+fn normalize_task_path(task: &str) -> String {
+    if task.starts_with('/') {
+        task.to_string()
+    } else {
+        format!("/{}", task)
+    }
+}
+
+fn extract_job_id(qmap: &HashMap<String, String>) -> Result<String, String> {
+    match qmap.get("id").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(id) => Ok(id.to_string()),
+        None => Err("missing 'id' parameter".to_string()),
+    }
+}
+
+fn mark_job_failed(state: &SharedState, job_id: &str, message: &str) {
+    let mut st = state.lock().unwrap();
+    if let Some(job) = st.jobs.get_mut(job_id) {
+        job.status = "failed".to_string();
+        job.error_message = message.to_string();
+        job.result = Value::Null;
     }
 }
 
