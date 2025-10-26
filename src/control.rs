@@ -3,10 +3,10 @@ use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::net::{TcpStream};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Sender};
 const MAX_LATENCY_SAMPLES: usize = 128;
 use std::time::Instant;
-use serde_json::Value;
+use serde_json::{Value, json};
 #[derive(Serialize, Clone)]
 pub struct WorkerInfo {
     pub command: String,
