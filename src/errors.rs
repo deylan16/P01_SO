@@ -157,6 +157,16 @@ pub fn res200_json(stream: TcpStream, body: &str, meta: &ResponseMeta) {
     );
 }
 
+pub fn error503_json(stream: TcpStream, body: &str, meta: &ResponseMeta) {
+    send_response_with_ct(
+        stream,
+        "HTTP/1.0 503 Service Unavailable",
+        "application/json; charset=utf-8",
+        body,
+        meta,
+    );
+}
+
 fn finalize_job_if_needed(status_line: &str, body: &str, meta: &ResponseMeta) -> bool {
     let Some(job_meta) = &meta.job_meta else {
         return false;

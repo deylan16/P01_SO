@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
-use std::net::{TcpStream};
+use std::net::TcpStream;
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 const MAX_LATENCY_SAMPLES: usize = 128;
 use std::time::Instant;
 use serde_json::Value;
@@ -43,12 +43,17 @@ pub struct ServerState {
     pub pool_of_workers_for_command:HashMap<String, Vec<Sender<Task>>>,
     pub counters: HashMap<String, usize>,
     pub workers_for_command: usize,
-    
+    pub max_in_flight_per_command: usize,
+    pub retry_after_ms: u64,
 }
 
 pub type SharedState = Arc<Mutex<ServerState>>;
 
 pub fn new_state() -> SharedState {
+    let workers_for_command = env_usize("P01_WORKERS_PER_COMMAND", 2).max(1);
+    let max_in_flight_per_command = env_usize("P01_MAX_INFLIGHT", 32).max(1);
+    let retry_after_ms = env_u64("P01_RETRY_AFTER_MS", 250);
+
     Arc::new(Mutex::new(ServerState {
         start_time: Utc::now(),
         total_connections: 0,
@@ -59,8 +64,24 @@ pub fn new_state() -> SharedState {
         id_job_counter: 0,
         pool_of_workers_for_command: HashMap::new(),
         counters: HashMap::new(),
-        workers_for_command: 2,
+        workers_for_command,
+        max_in_flight_per_command,
+        retry_after_ms,
     }))
+}
+
+fn env_usize(var: &str, default: usize) -> usize {
+    std::env::var(var)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn env_u64(var: &str, default: u64) -> u64 {
+    std::env::var(var)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
 }
 
 #[derive(Clone)]

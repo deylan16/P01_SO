@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
-use errors::{error400, error404, error500, res200, res200_json, ResponseMeta};
+use errors::{error400, error404, error500, error503_json, res200, res200_json, ResponseMeta};
 
 use chrono::Utc;
 use serde_json::json;
@@ -276,6 +276,32 @@ fn main() -> io::Result<()> {
                     if !handle_command(path, &qmap, &stream, &main_meta, &state) {
                         error404(stream, path_and_args, &main_meta);
                     }
+                    continue;
+                }
+
+                let backpressure = {
+                    let st = state.lock().unwrap();
+                    st.command_stats.get(path).and_then(|stats| {
+                        if stats.in_flight >= st.max_in_flight_per_command {
+                            Some((st.retry_after_ms, stats.in_flight, st.max_in_flight_per_command))
+                        } else {
+                            None
+                        }
+                    })
+                };
+
+                if let Some((retry_after_ms, current, limit)) = backpressure {
+                    let body = json!({
+                        "error": "backpressure",
+                        "message": format!("{} saturated: {} in-flight (limit {})", path, current, limit),
+                        "retry_after_ms": retry_after_ms
+                    })
+                    .to_string();
+                    let retry_seconds = ((retry_after_ms + 999) / 1000).max(1);
+                    let meta_retry = main_meta
+                        .clone()
+                        .with_header("Retry-After", retry_seconds.to_string());
+                    error503_json(stream, &body, &meta_retry);
                     continue;
                 }
 
