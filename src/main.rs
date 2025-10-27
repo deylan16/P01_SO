@@ -10,7 +10,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use errors::{error400, error404, error500, error503_json, res200, res200_json, ResponseMeta};
 
@@ -146,8 +146,13 @@ fn main() -> io::Result<()> {
                     }
 
                     if !skip_execution {
+                        let task_timeout_ms = {
+                            let st = state_clone.lock().unwrap();
+                            st.task_timeout_ms
+                        };
+                        let deadline = Instant::now() + Duration::from_millis(task_timeout_ms);
                         let handled =
-                            handle_command(&path, &qmap, &task.stream, &meta, &state_clone);
+                            handle_command(&path, &qmap, &task.stream, &meta, &state_clone, deadline);
 
                         if !handled {
                             let message = format!(
@@ -273,7 +278,12 @@ fn main() -> io::Result<()> {
 
                 if path.starts_with("/jobs/") {
                     let qmap = parse_query(query_str);
-                    if !handle_command(path, &qmap, &stream, &main_meta, &state) {
+                    let task_timeout_ms = {
+                        let st = state.lock().unwrap();
+                        st.task_timeout_ms
+                    };
+                    let deadline = Instant::now() + Duration::from_millis(task_timeout_ms);
+                    if !handle_command(path, &qmap, &stream, &main_meta, &state, deadline) {
                         error404(stream, path_and_args, &main_meta);
                     }
                     continue;

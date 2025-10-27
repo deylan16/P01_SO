@@ -45,6 +45,7 @@ pub struct ServerState {
     pub workers_for_command: usize,
     pub max_in_flight_per_command: usize,
     pub retry_after_ms: u64,
+    pub task_timeout_ms: u64,
 }
 
 pub type SharedState = Arc<Mutex<ServerState>>;
@@ -53,6 +54,7 @@ pub fn new_state() -> SharedState {
     let workers_for_command = env_usize("P01_WORKERS_PER_COMMAND", 2).max(1);
     let max_in_flight_per_command = env_usize("P01_MAX_INFLIGHT", 32).max(1);
     let retry_after_ms = env_u64("P01_RETRY_AFTER_MS", 250);
+    let task_timeout_ms = env_u64("P01_TASK_TIMEOUT_MS", 60_000).max(1);
 
     Arc::new(Mutex::new(ServerState {
         start_time: Utc::now(),
@@ -67,6 +69,7 @@ pub fn new_state() -> SharedState {
         workers_for_command,
         max_in_flight_per_command,
         retry_after_ms,
+        task_timeout_ms,
     }))
 }
 

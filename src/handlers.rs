@@ -9,6 +9,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use std::cell::Cell;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use rand::rngs::StdRng;
@@ -19,7 +20,7 @@ use sha2::{Digest, Sha256};
 use xz2::write::XzEncoder;
 
 use crate::control::{Job, SharedState,Task};
-use crate::errors::{ResponseMeta,error404, error400, error409, error500, res200_json};
+use crate::errors::{ResponseMeta,error404, error400, error409, error500, error503_json, res200_json};
 
 const MAX_RANDOM_COUNT: u64 = 1024;
 const MAX_PI_DIGITS: usize = 1000;
@@ -32,7 +33,9 @@ pub fn handle_command(
     stream: &TcpStream,
     meta: &ResponseMeta,
     state: &SharedState,
+    deadline: Instant,
 ) -> bool {
+    let guard = TimeoutGuard::new(deadline, stream, meta);
     match path {
         "/reverse" => {
             if let Some(text) = qmap.get("text") {
@@ -260,7 +263,19 @@ pub fn handle_command(
                 .get("seconds")
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(0);
-            sleep(Duration::from_secs(seconds));
+            if guard.expired() {
+                return true;
+            }
+            let desired = Duration::from_secs(seconds);
+            let Some(remaining) = guard.remaining() else {
+                guard.trigger();
+                return true;
+            };
+            if desired > remaining {
+                guard.trigger();
+                return true;
+            }
+            sleep(desired);
             respond_json(stream, meta, json!({"slept_seconds": seconds}));
             true
         }
@@ -276,6 +291,9 @@ pub fn handle_command(
             let until = Instant::now() + Duration::from_secs(seconds);
             let mut counter = 0u64;
             while Instant::now() < until {
+                if guard.expired() {
+                    return true;
+                }
                 counter = counter.wrapping_add(1);
             }
             respond_json(
@@ -298,9 +316,15 @@ pub fn handle_command(
                 .unwrap_or(50);
             let start = Instant::now();
             for _ in 0..tasks {
+                if guard.expired() {
+                    return true;
+                }
                 let until = Instant::now() + Duration::from_millis(sleep_ms);
                 let mut noisy = 0u64;
                 while Instant::now() < until {
+                    if guard.expired() {
+                        return true;
+                    }
                     noisy = noisy.wrapping_add(1);
                 }
                 std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
@@ -317,7 +341,10 @@ pub fn handle_command(
             match qmap.get("n").and_then(|s| s.parse::<u128>().ok()) {
                 Some(n) => {
                     let start = Instant::now();
-                    let is_prime = check_prime(n);
+                    let is_prime = match check_prime(n, &guard) {
+                        Ok(val) => val,
+                        Err(_) => return true,
+                    };
                     let elapsed = start.elapsed().as_millis();
                     respond_json(
                         stream,
@@ -338,7 +365,10 @@ pub fn handle_command(
             match qmap.get("n").and_then(|s| s.parse::<u128>().ok()) {
                 Some(n) => {
                     let start = Instant::now();
-                    let factors = factorize(n);
+                    let factors = match factorize(n, &guard) {
+                        Ok(v) => v,
+                        Err(_) => return true,
+                    };
                     let elapsed = start.elapsed().as_millis();
                     respond_json(
                         stream,
@@ -369,7 +399,10 @@ pub fn handle_command(
                 return true;
             }
             let start = Instant::now();
-            let pi = compute_pi_digits(digits);
+            let pi = match compute_pi_digits(digits, &guard) {
+                Ok(pi) => pi,
+                Err(_) => return true,
+            };
             let elapsed = start.elapsed().as_millis();
             respond_json(
                 stream,
@@ -407,8 +440,16 @@ pub fn handle_command(
             } else {
                 None
             };
-            let (iters, elapsed, pgm_written) =
-                mandelbrot(width, height, max_iter, sanitized_output.as_deref());
+            let (iters, elapsed, pgm_written) = match mandelbrot(
+                width,
+                height,
+                max_iter,
+                sanitized_output.as_deref(),
+                &guard,
+            ) {
+                Ok(v) => v,
+                Err(_) => return true,
+            };
             respond_json(
                 stream,
                 meta,
@@ -438,7 +479,10 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(42);
             let start = Instant::now();
-            let hash = matrix_multiply_hash(size, seed);
+            let hash = match matrix_multiply_hash(size, seed, &guard) {
+                Ok(hash) => hash,
+                Err(_) => return true,
+            };
             let elapsed = start.elapsed().as_millis();
             respond_json(
                 stream,
@@ -473,7 +517,7 @@ pub fn handle_command(
                 return true;
             }
             let start = Instant::now();
-            match sort_file(&path, algo) {
+            match sort_file(&path, algo, &guard) {
                 Ok((sorted_path, count)) => {
                     let elapsed = start.elapsed().as_millis();
                     respond_json(
@@ -488,7 +532,10 @@ pub fn handle_command(
                         }),
                     );
                 }
-                Err(err) => error500(stream_clone(stream), &err, meta),
+                Err(HandlerError::Timeout) => return true,
+                Err(HandlerError::Message(err)) => {
+                    error500(stream_clone(stream), &err, meta)
+                }
             }
             true
         }
@@ -502,9 +549,12 @@ pub fn handle_command(
                             return true;
                         }
                     };
-                    match word_count(&path) {
+                    match word_count(&path, &guard) {
                         Ok(stats) => respond_json(stream, meta, stats),
-                        Err(err) => error500(stream_clone(stream), &err, meta),
+                        Err(HandlerError::Timeout) => return true,
+                        Err(HandlerError::Message(err)) => {
+                            error500(stream_clone(stream), &err, meta)
+                        }
                     }
                 }
                 None => error400(stream_clone(stream), "missing 'name' parameter", meta),
@@ -544,9 +594,12 @@ pub fn handle_command(
                     return true;
                 }
             };
-            match grep_file(&path, &regex) {
+            match grep_file(&path, &regex, &guard) {
                 Ok(value) => respond_json(stream, meta, value),
-                Err(err) => error500(stream_clone(stream), &err, meta),
+                Err(HandlerError::Timeout) => return true,
+                Err(HandlerError::Message(err)) => {
+                    error500(stream_clone(stream), &err, meta)
+                }
             }
             true
         }
@@ -570,9 +623,12 @@ pub fn handle_command(
                 error400(stream_clone(stream), "codec must be gzip or xz", meta);
                 return true;
             }
-            match compress_file(&path, codec) {
+            match compress_file(&path, codec, &guard) {
                 Ok(value) => respond_json(stream, meta, value),
-                Err(err) => error500(stream_clone(stream), &err, meta),
+                Err(HandlerError::Timeout) => return true,
+                Err(HandlerError::Message(err)) => {
+                    error500(stream_clone(stream), &err, meta)
+                }
             }
             true
         }
@@ -596,13 +652,16 @@ pub fn handle_command(
                 error400(stream_clone(stream), "unsupported algo (only sha256)", meta);
                 return true;
             }
-            match hash_file(&path) {
+            match hash_file(&path, &guard) {
                 Ok(hash) => respond_json(
                     stream,
                     meta,
                     json!({"file": path.display().to_string(), "algorithm": "sha256", "digest": hash}),
                 ),
-                Err(err) => error500(stream_clone(stream), &err, meta),
+                Err(HandlerError::Timeout) => return true,
+                Err(HandlerError::Message(err)) => {
+                    error500(stream_clone(stream), &err, meta)
+                }
             }
             true
         }
@@ -882,34 +941,43 @@ fn mark_job_failed(state: &SharedState, job_id: &str, message: &str) {
 }
 
 
-fn check_prime(n: u128) -> bool {
+fn check_prime(n: u128, guard: &TimeoutGuard) -> Result<bool, ()> {
     if n < 2 {
-        return false;
+        return Ok(false);
     }
     if n % 2 == 0 {
-        return n == 2;
+        return Ok(n == 2);
     }
     let mut d = 3u128;
     while d * d <= n {
+        if guard.expired() {
+            return Err(());
+        }
         if n % d == 0 {
-            return false;
+            return Ok(false);
         }
         d += 2;
     }
-    true
+    Ok(true)
 }
 
-fn factorize(mut n: u128) -> Vec<(u128, u32)> {
+fn factorize(mut n: u128, guard: &TimeoutGuard) -> Result<Vec<(u128, u32)>, ()> {
     if n < 2 {
-        return vec![(n, 1)];
+        return Ok(vec![(n, 1)]);
     }
     let mut res = Vec::new();
     let mut d = 2;
     while (d as u128) * (d as u128) <= n {
+        if guard.expired() {
+            return Err(());
+        }
         let mut cnt = 0;
         while n % d as u128 == 0 {
             n /= d as u128;
             cnt += 1;
+            if guard.expired() {
+                return Err(());
+            }
         }
         if cnt > 0 {
             res.push((d as u128, cnt));
@@ -919,12 +987,12 @@ fn factorize(mut n: u128) -> Vec<(u128, u32)> {
     if n > 1 {
         res.push((n, 1));
     }
-    res
+    Ok(res)
 }
 
-fn compute_pi_digits(digits: usize) -> String {
+fn compute_pi_digits(digits: usize, guard: &TimeoutGuard) -> Result<String, ()> {
     if digits == 0 {
-        return "3".to_string();
+        return Ok("3".to_string());
     }
     let mut pi = String::from("3.");
     let len = digits * 10 / 3 + 2;
@@ -933,12 +1001,18 @@ fn compute_pi_digits(digits: usize) -> String {
     let mut predigit = 0u32;
 
     for _ in 0..digits {
+        if guard.expired() {
+            return Err(());
+        }
         let mut carry = 0u32;
         for j in (0..len).rev() {
             let denominator = 2 * j as u32 + 1;
             let num = array[j] * 10 + carry;
             array[j] = num % denominator;
             carry = (num / denominator) * j as u32;
+            if guard.expired() {
+                return Err(());
+            }
         }
         array[0] = carry % 10;
         let digit = carry / 10;
@@ -961,7 +1035,7 @@ fn compute_pi_digits(digits: usize) -> String {
         }
     }
     pi.push_str(&predigit.to_string());
-    pi
+    Ok(pi)
 }
 
 fn mandelbrot(
@@ -969,17 +1043,27 @@ fn mandelbrot(
     height: usize,
     max_iter: u32,
     file: Option<&Path>,
-) -> (Vec<Vec<u32>>, u128, Option<String>) {
+    guard: &TimeoutGuard,
+) -> Result<(Vec<Vec<u32>>, u128, Option<String>), ()> {
     let start = Instant::now();
     let mut grid = vec![vec![0u32; width]; height];
     for y in 0..height {
+        if guard.expired() {
+            return Err(());
+        }
         for x in 0..width {
+            if guard.expired() {
+                return Err(());
+            }
             let cx = (x as f64 / width as f64) * 3.5 - 2.5;
             let cy = (y as f64 / height as f64) * 2.0 - 1.0;
             let mut zx = 0.0f64;
             let mut zy = 0.0f64;
             let mut iter = 0u32;
             while zx * zx + zy * zy <= 4.0 && iter < max_iter {
+                if guard.expired() {
+                    return Err(());
+                }
                 let temp = zx * zx - zy * zy + cx;
                 zy = 2.0 * zx * zy + cy;
                 zx = temp;
@@ -991,10 +1075,16 @@ fn mandelbrot(
     let elapsed = start.elapsed().as_millis() as u128;
     let mut pgm = None;
     if let Some(name) = file {
+        if guard.expired() {
+            return Err(());
+        }
         if let Ok(mut f) = File::create(name) {
             let _ = writeln!(f, "P2\n{} {}\n255", width, height);
             for row in &grid {
                 for value in row {
+                    if guard.expired() {
+                        return Err(());
+                    }
                     let scaled = (*value as u64 * 255 / max_iter.max(1) as u64) as u32;
                     let _ = write!(f, "{} ", scaled);
                 }
@@ -1003,17 +1093,23 @@ fn mandelbrot(
             pgm = Some(name.display().to_string());
         }
     }
-    (grid, elapsed, pgm)
+    Ok((grid, elapsed, pgm))
 }
 
-fn matrix_multiply_hash(size: usize, seed: u64) -> String {
+fn matrix_multiply_hash(size: usize, seed: u64, guard: &TimeoutGuard) -> Result<String, ()> {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut a = vec![0f64; size * size];
     let mut b = vec![0f64; size * size];
     for v in &mut a {
+        if guard.expired() {
+            return Err(());
+        }
         *v = rng.gen_range(0.0..1.0);
     }
     for v in &mut b {
+        if guard.expired() {
+            return Err(());
+        }
         *v = rng.gen_range(0.0..1.0);
     }
     let mut c = vec![0f64; size * size];
@@ -1021,71 +1117,91 @@ fn matrix_multiply_hash(size: usize, seed: u64) -> String {
         for k in 0..size {
             let aik = a[i * size + k];
             for j in 0..size {
+                if guard.expired() {
+                    return Err(());
+                }
                 c[i * size + j] += aik * b[k * size + j];
             }
         }
     }
     let mut hasher = Sha256::new();
     for value in c {
+        if guard.expired() {
+            return Err(());
+        }
         hasher.update(value.to_le_bytes());
     }
-    format!("{:x}", hasher.finalize())
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn sort_file(path: &Path, algo: &str) -> Result<(String, usize), String> {
+fn sort_file(path: &Path, algo: &str, guard: &TimeoutGuard) -> Result<(String, usize), HandlerError> {
+    guard.ensure()?;
     let file = File::open(path)
-        .map_err(|e| format!("unable to open {}: {}", path.display(), e))?;
+        .map_err(|e| HandlerError::msg(format!("unable to open {}: {}", path.display(), e)))?;
     let reader = BufReader::new(file);
-    let mut values: Vec<i64> = reader
-        .lines()
-        .map(|line| {
-            line.and_then(|l| {
-                l.trim()
-                    .parse::<i64>()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-            })
-        })
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("unable to parse integers: {}", e))?;
-    if values.len() > MAX_SORT_ITEMS {
-        return Err(format!(
-            "file too large (>{} items) for in-memory sort",
-            MAX_SORT_ITEMS
-        ));
+    let mut values: Vec<i64> = Vec::new();
+    for line in reader.lines() {
+        guard.ensure()?;
+        let line = line
+            .map_err(|e| HandlerError::msg(format!("read error: {}", e)))?;
+        let value = line.trim().parse::<i64>().map_err(|e| {
+            HandlerError::msg(format!("unable to parse integers: {}", e))
+        })?;
+        values.push(value);
+        if values.len() > MAX_SORT_ITEMS {
+            return Err(HandlerError::msg(format!(
+                "file too large (>{} items) for in-memory sort",
+                MAX_SORT_ITEMS
+            )));
+        }
     }
+
     match algo {
-        "merge" => merge_sort(&mut values),
-        _ => quick_sort(&mut values),
+        "merge" => merge_sort(&mut values, guard)?,
+        _ => quick_sort(&mut values, guard)?,
     }
+
     let sorted_path = format!("{}.sorted", path.display());
     let mut out = File::create(&sorted_path)
-        .map_err(|e| format!("unable to create {}: {}", sorted_path, e))?;
+        .map_err(|e| HandlerError::msg(format!("unable to create {}: {}", sorted_path, e)))?;
     for (idx, value) in values.iter().enumerate() {
+        guard.ensure()?;
         if idx > 0 {
-            writeln!(out).map_err(|e| format!("write error: {}", e))?;
+            writeln!(out)
+                .map_err(|e| HandlerError::msg(format!("write error: {}", e)))?;
         }
-        write!(out, "{}", value).map_err(|e| format!("write error: {}", e))?;
+        write!(out, "{}", value)
+            .map_err(|e| HandlerError::msg(format!("write error: {}", e)))?;
     }
     Ok((sorted_path, values.len()))
 }
 
-fn merge_sort(values: &mut [i64]) {
+fn merge_sort(values: &mut [i64], guard: &TimeoutGuard) -> Result<(), HandlerError> {
     if values.len() <= 1 {
-        return;
+        return Ok(());
     }
+    guard.ensure()?;
     let mid = values.len() / 2;
-    merge_sort(&mut values[..mid]);
-    merge_sort(&mut values[mid..]);
+    merge_sort(&mut values[..mid], guard)?;
+    merge_sort(&mut values[mid..], guard)?;
+    guard.ensure()?;
     let mut merged = values.to_vec();
-    merge(&values[..mid], &values[mid..], &mut merged);
+    merge(&values[..mid], &values[mid..], &mut merged, guard)?;
     values.copy_from_slice(&merged);
+    Ok(())
 }
 
-fn merge(left: &[i64], right: &[i64], out: &mut [i64]) {
+fn merge(
+    left: &[i64],
+    right: &[i64],
+    out: &mut [i64],
+    guard: &TimeoutGuard,
+) -> Result<(), HandlerError> {
     let mut i = 0;
     let mut j = 0;
     let mut k = 0;
     while i < left.len() && j < right.len() {
+        guard.ensure()?;
         if left[i] <= right[j] {
             out[k] = left[i];
             i += 1;
@@ -1096,55 +1212,63 @@ fn merge(left: &[i64], right: &[i64], out: &mut [i64]) {
         k += 1;
     }
     while i < left.len() {
+        guard.ensure()?;
         out[k] = left[i];
         i += 1;
         k += 1;
     }
     while j < right.len() {
+        guard.ensure()?;
         out[k] = right[j];
         j += 1;
         k += 1;
     }
+    Ok(())
 }
 
-fn quick_sort(values: &mut [i64]) {
+fn quick_sort(values: &mut [i64], guard: &TimeoutGuard) -> Result<(), HandlerError> {
     if values.len() <= 1 {
-        return;
+        return Ok(());
     }
-    let pivot_index = partition(values);
+    guard.ensure()?;
+    let pivot_index = partition(values, guard)?;
     let (left, right) = values.split_at_mut(pivot_index);
-    quick_sort(left);
-    quick_sort(&mut right[1..]);
+    quick_sort(left, guard)?;
+    quick_sort(&mut right[1..], guard)?;
+    Ok(())
 }
 
-fn partition(values: &mut [i64]) -> usize {
+fn partition(values: &mut [i64], guard: &TimeoutGuard) -> Result<usize, HandlerError> {
     let len = values.len();
     let pivot_index = len - 1;
     let pivot = values[pivot_index];
     let mut i = 0;
     for j in 0..pivot_index {
+        guard.ensure()?;
         if values[j] <= pivot {
             values.swap(i, j);
             i += 1;
         }
     }
     values.swap(i, pivot_index);
-    i
+    Ok(i)
 }
 
-fn word_count(path: &Path) -> Result<Value, String> {
+fn word_count(path: &Path, guard: &TimeoutGuard) -> Result<Value, HandlerError> {
+    guard.ensure()?;
     let file = File::open(path)
-        .map_err(|e| format!("unable to open {}: {}", path.display(), e))?;
+        .map_err(|e| HandlerError::msg(format!("unable to open {}: {}", path.display(), e)))?;
     let mut reader = BufReader::new(file);
     let mut bytes = 0usize;
     let mut lines = 0usize;
     let mut words = 0usize;
     let mut buf = String::new();
     loop {
+        guard.ensure()?;
         buf.clear();
         let n = reader
             .read_line(&mut buf)
-            .map_err(|e| format!("read error: {}", e))?;
+            .map_err(|e| HandlerError::msg(format!("read error: {}", e)))?;
         if n == 0 {
             break;
         }
@@ -1160,14 +1284,16 @@ fn word_count(path: &Path) -> Result<Value, String> {
     }))
 }
 
-fn grep_file(path: &Path, regex: &Regex) -> Result<Value, String> {
+fn grep_file(path: &Path, regex: &Regex, guard: &TimeoutGuard) -> Result<Value, HandlerError> {
+    guard.ensure()?;
     let file = File::open(path)
-        .map_err(|e| format!("unable to open {}: {}", path.display(), e))?;
+        .map_err(|e| HandlerError::msg(format!("unable to open {}: {}", path.display(), e)))?;
     let reader = BufReader::new(file);
     let mut matches = 0usize;
     let mut first_lines = Vec::new();
     for line in reader.lines() {
-        let line = line.map_err(|e| format!("read error: {}", e))?;
+        guard.ensure()?;
+        let line = line.map_err(|e| HandlerError::msg(format!("read error: {}", e)))?;
         if regex.is_match(&line) {
             matches += 1;
             if first_lines.len() < 10 {
@@ -1183,38 +1309,47 @@ fn grep_file(path: &Path, regex: &Regex) -> Result<Value, String> {
     }))
 }
 
-fn compress_file(path: &Path, codec: &str) -> Result<Value, String> {
+fn compress_file(path: &Path, codec: &str, guard: &TimeoutGuard) -> Result<Value, HandlerError> {
+    guard.ensure()?;
     let mut input = File::open(path)
-        .map_err(|e| format!("unable to open {}: {}", path.display(), e))?;
+        .map_err(|e| HandlerError::msg(format!("unable to open {}: {}", path.display(), e)))?;
     let mut contents = Vec::new();
-    input
-        .read_to_end(&mut contents)
-        .map_err(|e| format!("read error: {}", e))?;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        guard.ensure()?;
+        let n = input
+            .read(&mut buf)
+            .map_err(|e| HandlerError::msg(format!("read error: {}", e)))?;
+        if n == 0 {
+            break;
+        }
+        contents.extend_from_slice(&buf[..n]);
+    }
     let base = path.display().to_string();
     let output_path = match codec {
         "xz" => format!("{}.xz", base),
         _ => format!("{}.gz", base),
     };
     let output_file = File::create(&output_path)
-        .map_err(|e| format!("unable to create {}: {}", output_path, e))?;
+        .map_err(|e| HandlerError::msg(format!("unable to create {}: {}", output_path, e)))?;
     match codec {
         "xz" => {
             let mut encoder = XzEncoder::new(output_file, 6);
             encoder
                 .write_all(&contents)
-                .map_err(|e| format!("xz write error: {}", e))?;
+                .map_err(|e| HandlerError::msg(format!("xz write error: {}", e)))?;
             encoder
                 .finish()
-                .map_err(|e| format!("xz finish error: {}", e))?;
+                .map_err(|e| HandlerError::msg(format!("xz finish error: {}", e)))?;
         }
         _ => {
             let mut encoder = GzEncoder::new(output_file, Compression::default());
             encoder
                 .write_all(&contents)
-                .map_err(|e| format!("gzip write error: {}", e))?;
+                .map_err(|e| HandlerError::msg(format!("gzip write error: {}", e)))?;
             encoder
                 .finish()
-                .map_err(|e| format!("gzip finish error: {}", e))?;
+                .map_err(|e| HandlerError::msg(format!("gzip finish error: {}", e)))?;
         }
     }
     Ok(json!({
@@ -1228,15 +1363,17 @@ fn compress_file(path: &Path, codec: &str) -> Result<Value, String> {
     }))
 }
 
-fn hash_file(path: &Path) -> Result<String, String> {
+fn hash_file(path: &Path, guard: &TimeoutGuard) -> Result<String, HandlerError> {
+    guard.ensure()?;
     let mut file = File::open(path)
-        .map_err(|e| format!("unable to open {}: {}", path.display(), e))?;
+        .map_err(|e| HandlerError::msg(format!("unable to open {}: {}", path.display(), e)))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
+        guard.ensure()?;
         let n = file
             .read(&mut buf)
-            .map_err(|e| format!("read error: {}", e))?;
+            .map_err(|e| HandlerError::msg(format!("read error: {}", e)))?;
         if n == 0 {
             break;
         }
@@ -1275,6 +1412,72 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+enum HandlerError {
+    Timeout,
+    Message(String),
+}
+
+impl HandlerError {
+    fn msg(msg: impl Into<String>) -> Self {
+        HandlerError::Message(msg.into())
+    }
+}
+
+struct TimeoutGuard<'a> {
+    deadline: Instant,
+    stream: &'a TcpStream,
+    meta: &'a ResponseMeta,
+    fired: Cell<bool>,
+}
+
+impl<'a> TimeoutGuard<'a> {
+    fn new(deadline: Instant, stream: &'a TcpStream, meta: &'a ResponseMeta) -> Self {
+        Self {
+            deadline,
+            stream,
+            meta,
+            fired: Cell::new(false),
+        }
+    }
+
+    fn expired(&self) -> bool {
+        if self.fired.get() {
+            return true;
+        }
+        if Instant::now() > self.deadline {
+            self.trigger();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn ensure(&self) -> Result<(), HandlerError> {
+        if self.expired() {
+            Err(HandlerError::Timeout)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn remaining(&self) -> Option<Duration> {
+        self.deadline
+            .checked_duration_since(Instant::now())
+    }
+
+    fn trigger(&self) {
+        if self.fired.replace(true) {
+            return;
+        }
+        let body = json!({
+            "error": "timeout",
+            "message": "request exceeded maximum execution time"
+        })
+        .to_string();
+        error503_json(stream_clone(self.stream), &body, self.meta);
+    }
 }
 
 fn sanitize_path(raw: &str) -> Result<PathBuf, String> {
