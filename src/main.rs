@@ -26,12 +26,28 @@ fn next_request_id() -> String {
     format!("req-{}", id)
 }
 
+fn resolve_bind_addr() -> String {
+    let mut bind = std::env::var("P01_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--bind" {
+            if let Some(value) = args.next() {
+                bind = value;
+            }
+        } else if let Some(value) = arg.strip_prefix("--bind=") {
+            bind = value.to_string();
+        }
+    }
+    bind
+}
+
 fn main() -> io::Result<()> {
     // Estado compartido
     let state = new_state();
 
-    let listener = TcpListener::bind("127.0.0.1:8080")?;
-    println!("Servidor iniciado en http://127.0.0.1:8080");
+    let bind_addr = resolve_bind_addr();
+    let listener = TcpListener::bind(&bind_addr)?;
+    println!("Servidor iniciado en http://{}", bind_addr);
 
     // Lista de comandos imlementados
     let commands = vec![
