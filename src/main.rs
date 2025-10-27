@@ -1,7 +1,7 @@
 mod control;
 mod errors;
 mod handlers;
-use control::{new_state, WorkerInfo, Task};
+use control::{new_state, WorkerInfo, Task,save_jobs,load_jobs,Job};
 use handlers::handle_command;
 
 use std::collections::HashMap;
@@ -42,8 +42,35 @@ fn resolve_bind_addr() -> String {
 }
 
 fn main() -> io::Result<()> {
+    let loaded_jobs = load_jobs();
     // Estado compartido
     let state = new_state();
+    {
+        let mut st = state.lock().unwrap();
+        let mut last_id = 0u64;
+        for job in loaded_jobs {
+            // Intentar convertir el ID (string) a número
+            if let Ok(num_id) = job.id.parse::<u64>() {
+                if num_id > last_id {
+                    last_id = num_id;
+                }
+            }
+            st.jobs.insert(job.id.clone(), job);
+        }
+        // Guardar el siguiente ID disponible
+        st.id_job_counter = (last_id + 1) as usize;
+    }
+
+    ctrlc::set_handler({
+        let state = state.clone();
+        move || {
+            let st = state.lock().unwrap();
+            let jobs: Vec<Job> = st.jobs.values().cloned().collect();
+            save_jobs(&jobs);
+            println!("Jobs guardados antes del cierre.");
+             std::process::exit(0);
+        }
+    }).expect("Error configurando Ctrl-C handler");
 
     let bind_addr = resolve_bind_addr();
     let listener = TcpListener::bind(&bind_addr)?;

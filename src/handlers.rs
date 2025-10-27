@@ -692,6 +692,8 @@ pub fn handle_command(
                         status: "queued".to_string(),
                         error_message: String::new(),
                         result: Value::Null,
+                        progress: 0,
+                        eta_ms: 0,
                     },
                 );
                 job_id
@@ -780,8 +782,9 @@ pub fn handle_command(
                 let result = json!({
                     "job_id": job.id,
                     "status": job.status,
-                    "result": job.result,
-                    "error": job.error_message,
+                    "progress": job.progress,
+                    "eta_ms": job.eta_ms
+
                 });
                 respond_json(stream, meta, result);
             } else {
@@ -859,7 +862,7 @@ pub fn handle_command(
                         );
                     }
                     _ => {
-                        error409(stream_clone(stream), "job can no longer be cancelled", meta);
+                        error409(stream_clone(stream), &json!({"status": "not_cancelable"}).to_string(), meta);
                     }
                 }
             } else {

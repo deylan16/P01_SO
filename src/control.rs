@@ -1,9 +1,11 @@
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, VecDeque};
 use std::net::TcpStream;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::fs;
+use std::path::{Path,PathBuf};
 const MAX_LATENCY_SAMPLES: usize = 128;
 use std::time::Instant;
 use serde_json::Value;
@@ -13,6 +15,7 @@ pub struct WorkerInfo {
     pub thread_id: String,
     pub busy: bool,
 }
+
 
 //Estrucuta para cada worker
 pub struct Task {
@@ -24,14 +27,41 @@ pub struct Task {
     pub job_id: String,
     pub suppress_body: bool,
 }
-
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Job {
     pub id: String,
     pub status: String,
     pub error_message: String,
     pub result: Value,
+    pub progress: u8,
+    pub eta_ms: u64,
 
 }
+
+pub fn jobs_file_path() -> PathBuf {
+    let mut path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    path.push("jobs_journal.json");
+    path
+}
+
+pub fn save_jobs(jobs: &Vec<Job>) {
+    if let Ok(json) = serde_json::to_string_pretty(jobs) {
+        let path = jobs_file_path();
+        let _ = fs::write(&path, json);
+    }
+}
+pub fn load_jobs() -> Vec<Job> {
+    let path = jobs_file_path();
+    if Path::new(&path).exists() {
+        if let Ok(data) = fs::read_to_string(&path) {
+            if let Ok(jobs) = serde_json::from_str::<Vec<Job>>(&data) {
+                return jobs;
+            }
+        }
+    }
+    Vec::new()
+}
+
 pub struct ServerState {
     pub start_time: DateTime<Utc>,
     pub total_connections: usize,
