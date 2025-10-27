@@ -22,6 +22,7 @@ pub struct Task {
     pub dispatched_at: Instant,
     pub state: String,
     pub job_id: String,
+    pub suppress_body: bool,
 }
 
 pub struct Job {

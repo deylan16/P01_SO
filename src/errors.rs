@@ -15,6 +15,7 @@ pub struct ResponseMeta {
     pub worker_pid: String,
     pub extra_headers: Vec<(String, String)>,
     pub job_meta: Option<JobResponseMeta>,
+    suppress_body: bool,
 }
 
 impl ResponseMeta {
@@ -24,6 +25,7 @@ impl ResponseMeta {
             worker_pid: worker_pid.into(),
             extra_headers: Vec::new(),
             job_meta: None,
+            suppress_body: false,
         }
     }
 
@@ -38,6 +40,15 @@ impl ResponseMeta {
             job_id: job_id.into(),
         });
         self
+    }
+
+    pub fn for_head(mut self) -> Self {
+        self.suppress_body = true;
+        self
+    }
+
+    pub fn suppress_body(&self) -> bool {
+        self.suppress_body
     }
 }
 
@@ -62,7 +73,9 @@ fn send_response(mut stream: TcpStream, status_line: &str, body: &str, meta: &Re
     }
     head.push_str("\r\n");
     let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body.as_bytes());
+    if !meta.suppress_body() {
+        let _ = stream.write_all(body.as_bytes());
+    }
 }
 
 /// 400 - Bad Request
@@ -127,7 +140,9 @@ fn send_response_with_ct(
     head.push_str("\r\n");
 
     let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(bytes);
+    if !meta.suppress_body() {
+        let _ = stream.write_all(bytes);
+    }
     let _ = stream.flush();
 }
 

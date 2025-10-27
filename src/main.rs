@@ -6,7 +6,7 @@ use handlers::handle_command;
 
 use std::collections::HashMap;
 use std::io::{self, Read};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
@@ -19,6 +19,7 @@ use serde_json::json;
 use urlencoding::decode;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+const MAX_REQUEST_SIZE: usize = 16 * 1024;
 
 fn next_request_id() -> String {
     let id = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -125,6 +126,9 @@ fn main() -> io::Result<()> {
                     };
 
                     let mut meta = ResponseMeta::new(task.request_id.clone(), worker_label.clone());
+                    if task.suppress_body {
+                        meta = meta.for_head();
+                    }
                     let mut skip_execution = false;
 
                     if !task.job_id.is_empty() {
@@ -192,31 +196,49 @@ fn main() -> io::Result<()> {
         match stream {
             Ok(mut stream) => {
                 let request_id = next_request_id();
-                let main_meta =
+                let mut main_meta =
                     ResponseMeta::new(request_id.clone(), format!("{}:main", std::process::id()));
-                // Datos de la solucitud
-                let mut data = [0; 1024];
-                // Recorre la solicitud y la guarda en el data
-                let n = match stream.read(&mut data) {
-                    Ok(n) if n > 0 => n,
-                    _ => {
+
+                let request_buffer = match read_http_request(&mut stream) {
+                    Ok(buf) => buf,
+                    Err(e) => {
+                        eprintln!("Error leyendo request: {}", e);
                         error400(stream, "Bad request", &main_meta);
                         continue;
                     }
                 };
+
                 println!("Nuevo cliente conectado: {:?}", stream.peer_addr()?);
-                //Convierte la solicitud en string
-                let request = String::from_utf8_lossy(&data[..n]);
-                //Lee la primera linea de la solicitud que es donde se encuentran los datos
+
+                let header_end = header_length(&request_buffer);
+                let request = match String::from_utf8(request_buffer[..header_end].to_vec()) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        error400(stream, "Invalid UTF-8 in request", &main_meta);
+                        continue;
+                    }
+                };
+
                 let request_first_line = request.lines().next().unwrap_or("");
-                //Separa la primera linea para obtener cada dato en una lista
                 let components: Vec<&str> = request_first_line.split_whitespace().collect();
-                //Se verifica que tenga los datos requeridos
                 if components.len() < 2 {
                     error400(stream, "Bad request", &main_meta);
                     continue;
                 }
-                //Almacena la ruta del cliente solicitada
+
+                let suppress_body = match components[0] {
+                    method if method.eq_ignore_ascii_case("GET") => false,
+                    method if method.eq_ignore_ascii_case("HEAD") => true,
+                    _ => {
+                        error400(stream, "Unsupported HTTP method", &main_meta);
+                        continue;
+                    }
+                };
+
+                if suppress_body {
+                    main_meta = main_meta.for_head();
+                }
+
                 let path_and_args = components[1];
                 let mut path_split = path_and_args.splitn(2, '?');
                 let path = path_split.next().unwrap_or("");
@@ -257,38 +279,36 @@ fn main() -> io::Result<()> {
                     continue;
                 }
 
-                // Verifica el comando existe en el pool de workers por comando
-                let tx = {
-                    let st = state.lock().unwrap();
-
-                    // Obtiene referencia directa (no clonada)
-                    if let Some(senders) = st.pool_of_workers_for_command.get(path) {
-                        let idx = st.counters.get(path).unwrap();
-
-                        // Obtiene canal del worker actual
-                        let tx = &senders[*idx];
-
-                        Some(tx.clone()) // cloná el Sender individual, no todo el Vec
+                let (tx, path_known) = {
+                    let mut st = state.lock().unwrap();
+                    if let Some(senders_vec) = st.pool_of_workers_for_command.get(path) {
+                        let senders = senders_vec.clone();
+                        if senders.is_empty() {
+                            (None, true)
+                        } else if let Some(counter) = st.counters.get_mut(path) {
+                            let idx = *counter;
+                            println!(
+                                "Current worker index for command {}: {}",
+                                path, idx
+                            );
+                            *counter = (idx + 1) % senders.len();
+                            println!(
+                                "Dispatching to worker index {} for command {}",
+                                idx, path
+                            );
+                            (Some(senders[idx].clone()), true)
+                        } else {
+                            (None, true)
+                        }
                     } else {
-                        None
+                        (None, false)
                     }
                 };
-                {
-                    let mut st = state.lock().unwrap();
-                    let idx = st.counters.get_mut(path).unwrap();
-                    // Incrementa el índice
-                    println!(
-                        "Current worker index for command {}: {}",
-                        path, *idx
-                    );
-                    *idx = (*idx + 1) % workers_for_command;
-                    println!("Dispatching to worker index {} for command {}", idx, path);
-                }
 
                 if let Some(tx) = tx {
                     
                     //Clona el socket y valida si funciona
-                   
+                    
                     match stream.try_clone() {
                         Ok(stream_clone) => {
                             //Crea la tarea para mandar
@@ -299,6 +319,7 @@ fn main() -> io::Result<()> {
                                 dispatched_at: Instant::now(),
                                 state: "queued".to_string(),
                                 job_id: "".to_string(),
+                                suppress_body,
                             };
                             //Envia la tarea al worker
                             
@@ -318,7 +339,11 @@ fn main() -> io::Result<()> {
                         }
                     }
                 } else {
-                    error404(stream, path_and_args, &main_meta);
+                    if path_known {
+                        error500(stream, "No workers available", &main_meta);
+                    } else {
+                        error404(stream, path_and_args, &main_meta);
+                    }
                 }
             }
             Err(e) => {
@@ -346,4 +371,51 @@ fn parse_query(qs: &str) -> HashMap<String, String> {
         m.insert(k, v);
     }
     m
+}
+
+fn read_http_request(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+    let mut buffer = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    loop {
+        if headers_complete(&buffer) {
+            break;
+        }
+        if buffer.len() >= MAX_REQUEST_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Request header too large",
+            ));
+        }
+        let n = stream.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..n]);
+    }
+
+    if buffer.is_empty() {
+        Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Empty request",
+        ))
+    } else if headers_complete(&buffer) {
+        Ok(buffer)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Request header too large",
+        ))
+    }
+}
+
+fn headers_complete(buffer: &[u8]) -> bool {
+    buffer.windows(4).any(|w| w == b"\r\n\r\n")
+}
+
+fn header_length(buffer: &[u8]) -> usize {
+    buffer
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|idx| idx + 4)
+        .unwrap_or(buffer.len())
 }

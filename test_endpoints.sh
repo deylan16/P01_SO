@@ -4,11 +4,12 @@ set -euo pipefail
 BASE="http://127.0.0.1:8080"
 TMP_TXT="/tmp/p01_data.txt"
 TMP_PGM="/tmp/mb.pgm"
+TMP_NUM="/tmp/p01_numbers.txt"
 
 banner(){ printf "\n==== %s ====\n" "$*"; }
 
 cleanup(){
-  rm -f "$TMP_TXT" "$TMP_PGM" "$TMP_TXT.gz" || true
+  rm -f "$TMP_TXT" "$TMP_PGM" "$TMP_TXT.gz" "$TMP_NUM" "$TMP_NUM.sorted" || true
 }
 trap cleanup EXIT
 
@@ -64,9 +65,17 @@ echo "-- contenido actual --"
 cat "$TMP_TXT" ; echo
 
 banner "SORTFILE"
-curl -sG --data-urlencode "name=$TMP_TXT" --data-urlencode "algo=merge" "$BASE/sortfile" ; echo
+cat <<NUMBERS > "$TMP_NUM"
+7
+3
+-5
+42
+9
+0
+NUMBERS
+curl -sG --data-urlencode "name=$TMP_NUM" --data-urlencode "algo=merge" "$BASE/sortfile" ; echo
 echo "-- contenido ordenado --"
-cat "$TMP_TXT" ; echo
+cat "$TMP_NUM.sorted" ; echo
 
 banner "WORDCOUNT"
 curl -sG --data-urlencode "name=$TMP_TXT" "$BASE/wordcount" ; echo

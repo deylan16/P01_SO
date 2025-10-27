@@ -1,8 +1,10 @@
 
 use std::collections::HashMap;
+use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::path::{Component, Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -88,6 +90,14 @@ pub fn handle_command(
                     return true;
                 }
             };
+            let path = match sanitize_path(name) {
+                Ok(p) => p,
+                Err(msg) => {
+                    error400(stream_clone(stream), &msg, meta);
+                    return true;
+                }
+            };
+            let path_display = path.display().to_string();
             let content = qmap.get("content").map(String::as_str).unwrap_or("");
             let repeat = qmap
                 .get("repeat")
@@ -101,12 +111,12 @@ pub fn handle_command(
                 );
                 return true;
             }
-            let mut file = match File::create(name) {
+            let mut file = match File::create(&path) {
                 Ok(f) => f,
                 Err(err) => {
                     error500(
                         stream_clone(stream),
-                        &format!("unable to create {}: {}", name, err),
+                        &format!("unable to create {}: {}", path_display, err),
                         meta,
                     );
                     return true;
@@ -128,20 +138,30 @@ pub fn handle_command(
             respond_json(
                 stream,
                 meta,
-                json!({"file": name, "bytes_written": written, "repeat": repeat}),
+                json!({"file": path_display, "bytes_written": written, "repeat": repeat}),
             );
             true
         }
         "/deletefile" => {
             match qmap.get("name").or_else(|| qmap.get("path")) {
-                Some(name) => match fs::remove_file(name) {
-                    Ok(_) => respond_json(stream, meta, json!({"file": name, "deleted": true})),
-                    Err(err) => error500(
-                        stream_clone(stream),
-                        &format!("unable to delete {}: {}", name, err),
-                        meta,
-                    ),
-                },
+                Some(name) => {
+                    let path = match sanitize_path(name) {
+                        Ok(p) => p,
+                        Err(msg) => {
+                            error400(stream_clone(stream), &msg, meta);
+                            return true;
+                        }
+                    };
+                    let display = path.display().to_string();
+                    match fs::remove_file(&path) {
+                        Ok(_) => respond_json(stream, meta, json!({"file": display, "deleted": true})),
+                        Err(err) => error500(
+                            stream_clone(stream),
+                            &format!("unable to delete {}: {}", display, err),
+                            meta,
+                        ),
+                    }
+                }
                 None => error400(stream_clone(stream), "missing 'name' parameter", meta),
             }
             true
@@ -376,8 +396,19 @@ pub fn handle_command(
                 error400(stream_clone(stream), "invalid size or max_iter", meta);
                 return true;
             }
+            let sanitized_output = if let Some(target) = qmap.get("file") {
+                match sanitize_path(target) {
+                    Ok(path) => Some(path),
+                    Err(msg) => {
+                        error400(stream_clone(stream), &msg, meta);
+                        return true;
+                    }
+                }
+            } else {
+                None
+            };
             let (iters, elapsed, pgm_written) =
-                mandelbrot(width, height, max_iter, qmap.get("file"));
+                mandelbrot(width, height, max_iter, sanitized_output.as_deref());
             respond_json(
                 stream,
                 meta,
@@ -429,20 +460,27 @@ pub fn handle_command(
                     return true;
                 }
             };
+            let path = match sanitize_path(name) {
+                Ok(p) => p,
+                Err(msg) => {
+                    error400(stream_clone(stream), &msg, meta);
+                    return true;
+                }
+            };
             let algo = qmap.get("algo").map(String::as_str).unwrap_or("quick");
             if !matches!(algo, "quick" | "merge") {
                 error400(stream_clone(stream), "algo must be quick or merge", meta);
                 return true;
             }
             let start = Instant::now();
-            match sort_file(name, algo) {
+            match sort_file(&path, algo) {
                 Ok((sorted_path, count)) => {
                     let elapsed = start.elapsed().as_millis();
                     respond_json(
                         stream,
                         meta,
                         json!({
-                            "file": name,
+                            "file": path.display().to_string(),
                             "algo": algo,
                             "sorted_file": sorted_path,
                             "items": count,
@@ -456,10 +494,19 @@ pub fn handle_command(
         }
         "/wordcount" => {
             match qmap.get("name").or_else(|| qmap.get("path")) {
-                Some(name) => match word_count(name) {
-                    Ok(stats) => respond_json(stream, meta, stats),
-                    Err(err) => error500(stream_clone(stream), &err, meta),
-                },
+                Some(name) => {
+                    let path = match sanitize_path(name) {
+                        Ok(p) => p,
+                        Err(msg) => {
+                            error400(stream_clone(stream), &msg, meta);
+                            return true;
+                        }
+                    };
+                    match word_count(&path) {
+                        Ok(stats) => respond_json(stream, meta, stats),
+                        Err(err) => error500(stream_clone(stream), &err, meta),
+                    }
+                }
                 None => error400(stream_clone(stream), "missing 'name' parameter", meta),
             }
             true
@@ -469,6 +516,13 @@ pub fn handle_command(
                 Some(path) => path,
                 None => {
                     error400(stream_clone(stream), "missing 'name' parameter", meta);
+                    return true;
+                }
+            };
+            let path = match sanitize_path(name) {
+                Ok(p) => p,
+                Err(msg) => {
+                    error400(stream_clone(stream), &msg, meta);
                     return true;
                 }
             };
@@ -490,7 +544,7 @@ pub fn handle_command(
                     return true;
                 }
             };
-            match grep_file(name, &regex) {
+            match grep_file(&path, &regex) {
                 Ok(value) => respond_json(stream, meta, value),
                 Err(err) => error500(stream_clone(stream), &err, meta),
             }
@@ -504,12 +558,19 @@ pub fn handle_command(
                     return true;
                 }
             };
+            let path = match sanitize_path(name) {
+                Ok(p) => p,
+                Err(msg) => {
+                    error400(stream_clone(stream), &msg, meta);
+                    return true;
+                }
+            };
             let codec = qmap.get("codec").map(String::as_str).unwrap_or("gzip");
             if !matches!(codec, "gzip" | "xz") {
                 error400(stream_clone(stream), "codec must be gzip or xz", meta);
                 return true;
             }
-            match compress_file(name, codec) {
+            match compress_file(&path, codec) {
                 Ok(value) => respond_json(stream, meta, value),
                 Err(err) => error500(stream_clone(stream), &err, meta),
             }
@@ -523,16 +584,23 @@ pub fn handle_command(
                     return true;
                 }
             };
+            let path = match sanitize_path(name) {
+                Ok(p) => p,
+                Err(msg) => {
+                    error400(stream_clone(stream), &msg, meta);
+                    return true;
+                }
+            };
             let algo = qmap.get("algo").map(String::as_str).unwrap_or("sha256");
             if algo != "sha256" {
                 error400(stream_clone(stream), "unsupported algo (only sha256)", meta);
                 return true;
             }
-            match hash_file(name) {
+            match hash_file(&path) {
                 Ok(hash) => respond_json(
                     stream,
                     meta,
-                    json!({"file": name, "algorithm": "sha256", "digest": hash}),
+                    json!({"file": path.display().to_string(), "algorithm": "sha256", "digest": hash}),
                 ),
                 Err(err) => error500(stream_clone(stream), &err, meta),
             }
@@ -607,6 +675,7 @@ pub fn handle_command(
                         dispatched_at: Instant::now(),
                         state: "queued".to_string(),
                         job_id: job_id.clone(),
+                        suppress_body: false,
                     };
 
                     if tx.send(task).is_err() {
@@ -899,7 +968,7 @@ fn mandelbrot(
     width: usize,
     height: usize,
     max_iter: u32,
-    file: Option<&String>,
+    file: Option<&Path>,
 ) -> (Vec<Vec<u32>>, u128, Option<String>) {
     let start = Instant::now();
     let mut grid = vec![vec![0u32; width]; height];
@@ -931,7 +1000,7 @@ fn mandelbrot(
                 }
                 let _ = writeln!(f);
             }
-            pgm = Some(name.clone());
+            pgm = Some(name.display().to_string());
         }
     }
     (grid, elapsed, pgm)
@@ -963,8 +1032,9 @@ fn matrix_multiply_hash(size: usize, seed: u64) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn sort_file(path: &str, algo: &str) -> Result<(String, usize), String> {
-    let file = File::open(path).map_err(|e| format!("unable to open {}: {}", path, e))?;
+fn sort_file(path: &Path, algo: &str) -> Result<(String, usize), String> {
+    let file = File::open(path)
+        .map_err(|e| format!("unable to open {}: {}", path.display(), e))?;
     let reader = BufReader::new(file);
     let mut values: Vec<i64> = reader
         .lines()
@@ -987,7 +1057,7 @@ fn sort_file(path: &str, algo: &str) -> Result<(String, usize), String> {
         "merge" => merge_sort(&mut values),
         _ => quick_sort(&mut values),
     }
-    let sorted_path = format!("{}.sorted", path);
+    let sorted_path = format!("{}.sorted", path.display());
     let mut out = File::create(&sorted_path)
         .map_err(|e| format!("unable to create {}: {}", sorted_path, e))?;
     for (idx, value) in values.iter().enumerate() {
@@ -1062,8 +1132,9 @@ fn partition(values: &mut [i64]) -> usize {
     i
 }
 
-fn word_count(path: &str) -> Result<Value, String> {
-    let file = File::open(path).map_err(|e| format!("unable to open {}: {}", path, e))?;
+fn word_count(path: &Path) -> Result<Value, String> {
+    let file = File::open(path)
+        .map_err(|e| format!("unable to open {}: {}", path.display(), e))?;
     let mut reader = BufReader::new(file);
     let mut bytes = 0usize;
     let mut lines = 0usize;
@@ -1082,15 +1153,16 @@ fn word_count(path: &str) -> Result<Value, String> {
         words += buf.split_whitespace().count();
     }
     Ok(json!({
-        "file": path,
+        "file": path.display().to_string(),
         "bytes": bytes,
         "lines": lines,
         "words": words
     }))
 }
 
-fn grep_file(path: &str, regex: &Regex) -> Result<Value, String> {
-    let file = File::open(path).map_err(|e| format!("unable to open {}: {}", path, e))?;
+fn grep_file(path: &Path, regex: &Regex) -> Result<Value, String> {
+    let file = File::open(path)
+        .map_err(|e| format!("unable to open {}: {}", path.display(), e))?;
     let reader = BufReader::new(file);
     let mut matches = 0usize;
     let mut first_lines = Vec::new();
@@ -1104,22 +1176,24 @@ fn grep_file(path: &str, regex: &Regex) -> Result<Value, String> {
         }
     }
     Ok(json!({
-        "file": path,
+        "file": path.display().to_string(),
         "pattern": regex.as_str(),
         "matches": matches,
         "sample": first_lines
     }))
 }
 
-fn compress_file(path: &str, codec: &str) -> Result<Value, String> {
-    let mut input = File::open(path).map_err(|e| format!("unable to open {}: {}", path, e))?;
+fn compress_file(path: &Path, codec: &str) -> Result<Value, String> {
+    let mut input = File::open(path)
+        .map_err(|e| format!("unable to open {}: {}", path.display(), e))?;
     let mut contents = Vec::new();
     input
         .read_to_end(&mut contents)
         .map_err(|e| format!("read error: {}", e))?;
+    let base = path.display().to_string();
     let output_path = match codec {
-        "xz" => format!("{}.xz", path),
-        _ => format!("{}.gz", path),
+        "xz" => format!("{}.xz", base),
+        _ => format!("{}.gz", base),
     };
     let output_file = File::create(&output_path)
         .map_err(|e| format!("unable to create {}: {}", output_path, e))?;
@@ -1144,7 +1218,7 @@ fn compress_file(path: &str, codec: &str) -> Result<Value, String> {
         }
     }
     Ok(json!({
-        "file": path,
+        "file": base,
         "codec": codec,
         "output": output_path,
         "bytes_in": contents.len(),
@@ -1154,8 +1228,9 @@ fn compress_file(path: &str, codec: &str) -> Result<Value, String> {
     }))
 }
 
-fn hash_file(path: &str) -> Result<String, String> {
-    let mut file = File::open(path).map_err(|e| format!("unable to open {}: {}", path, e))?;
+fn hash_file(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path)
+        .map_err(|e| format!("unable to open {}: {}", path.display(), e))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
@@ -1200,4 +1275,52 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+fn sanitize_path(raw: &str) -> Result<PathBuf, String> {
+    if raw.trim().is_empty() {
+        return Err("path cannot be empty".to_string());
+    }
+    let candidate = PathBuf::from(raw);
+    if contains_parent_dir(&candidate) {
+        return Err("path must not contain '..' segments".to_string());
+    }
+    let absolute = if candidate.is_absolute() {
+        candidate
+    } else {
+        env::current_dir()
+            .map_err(|e| format!("unable to resolve current dir: {}", e))?
+            .join(candidate)
+    };
+    let allowed = allowed_roots();
+    if allowed.iter().any(|root| absolute.starts_with(root)) {
+        Ok(absolute)
+    } else {
+        Err("path outside allowed directories".to_string())
+    }
+}
+
+fn contains_parent_dir(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn allowed_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(cwd) = env::current_dir() {
+        roots.push(cwd);
+    }
+    roots.push(env::temp_dir());
+    if let Ok(extra) = env::var("P01_DATA_DIR") {
+        let extra_path = PathBuf::from(extra);
+        let absolute = if extra_path.is_absolute() {
+            extra_path
+        } else if let Ok(cwd) = env::current_dir() {
+            cwd.join(extra_path)
+        } else {
+            extra_path
+        };
+        roots.push(absolute);
+    }
+    roots
 }
