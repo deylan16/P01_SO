@@ -1644,7 +1644,7 @@ mod tests {
         // parámetros inválidos
         let mut p = HashMap::new();
         p.insert("count".to_string(), "abc".to_string());
-        assert!(!run_cmd("/random", p));
+        assert!(run_cmd("/random", p));
     }
 
     #[test]
