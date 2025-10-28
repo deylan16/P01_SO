@@ -79,28 +79,34 @@ fn send_response(mut stream: TcpStream, status_line: &str, body: &str, meta: &Re
 }
 
 /// 400 - Bad Request
-pub fn error400(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn error400(stream: TcpStream, explain: &str, meta: &ResponseMeta) -> bool {
     send_response(stream, "HTTP/1.0 400 Bad Request", explain, meta);
+    false // siempre devuelve false
 }
 
 /// 404 - Not Found
-pub fn error404(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn error404(stream: TcpStream, explain: &str, meta: &ResponseMeta) -> bool {
     send_response(stream, "HTTP/1.0 404 Not Found", explain, meta);
+    false // siempre devuelve false
 }
 
 /// 409 - Conflict
-pub fn error409(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn error409(stream: TcpStream, explain: &str, meta: &ResponseMeta) -> bool {
     send_response(stream, "HTTP/1.0 409 Conflict", explain, meta);
+    false // siempre devuelve false
 }
 
 /// 429 - Too Many Requests
-pub fn error429(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn error429(stream: TcpStream, explain: &str, meta: &ResponseMeta)-> bool{
     send_response(stream, "HTTP/1.0 429 Too Many Requests", explain, meta);
+    false // siempre devuelve false
 }
 
 /// 500 - Internal Server Error
-pub fn error500(stream: TcpStream, explain: &str, meta: &ResponseMeta) {
+pub fn error500(stream: TcpStream, explain: &str, meta: &ResponseMeta) -> bool{
     send_response(stream, "HTTP/1.0 500 Internal Server Error", explain, meta);
+    false // siempre devuelve false
+
 }
 
 /// 503 - Service Unavailable
@@ -196,4 +202,118 @@ fn finalize_job_if_needed(status_line: &str, body: &str, meta: &ResponseMeta) ->
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
+    use std::io::{Read, Write};
+    use serde_json::json;
+
+    use crate::control::ServerState; // o ajusta según tu estructura real
+
+    // 🔧 Helper para crear un stream TCP simulado
+    fn mock_stream() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        (client, server)
+    }
+
+    // 🔧 Helper para leer respuesta HTTP
+    fn read_response(mut stream: TcpStream) -> String {
+        let mut buffer = String::new();
+        stream.read_to_string(&mut buffer).unwrap();
+        buffer
+    }
+
+    #[test]
+    fn test_error400_generates_valid_http_response() {
+        let (client, server) = mock_stream();
+        let meta = ResponseMeta::new("req1", "pid123");
+
+        error400(server, "bad request", &meta);
+        let response = read_response(client);
+
+        assert!(response.contains("HTTP/1.0 400 Bad Request"));
+        assert!(response.contains("Content-Type: text/plain"));
+        assert!(response.contains("bad request"));
+    }
+
+    #[test]
+    fn test_res200_json_sends_correct_headers() {
+        let (client, server) = mock_stream();
+        let meta = ResponseMeta::new("req42", "workerA");
+
+        res200_json(server, r#"{"ok":true}"#, &meta);
+        let response = read_response(client);
+
+        assert!(response.contains("HTTP/1.0 200 OK"));
+        assert!(response.contains("Content-Type: application/json"));
+        assert!(response.contains("\"ok\":true"));
+    }
+
+    #[test]
+    fn test_finalize_job_on_success() {
+        // Creamos estado simulado
+        let job_id = "1".to_string();
+        let mut st = ServerState::default(); // asegúrate de tener un Default para State
+        st.jobs.insert(
+            job_id.clone(),
+            crate::Job {
+                id: job_id.clone(),
+                status: "running".into(),
+                error_message: "".into(),
+                result: Value::Null,
+                progress: 0,
+                eta_ms: 0,
+            },
+        );
+
+        let state = Arc::new(Mutex::new(st));
+
+        let meta = ResponseMeta::new("req123", "pid999")
+            .with_job(state.clone(), job_id.clone());
+
+        // Simular respuesta exitosa
+        finalize_job_if_needed("HTTP/1.0 200 OK", r#"{"result":"ok"}"#, &meta);
+
+        let st_guard = state.lock().unwrap();
+        let job = st_guard.jobs.get(&job_id).unwrap();
+        assert_eq!(job.status, "done");
+        assert_eq!(job.result["result"], "ok");
+        assert_eq!(job.error_message, "");
+    }
+
+    #[test]
+    fn test_finalize_job_on_failure() {
+        let job_id = "2".to_string();
+        let mut st = ServerState::default();
+        st.jobs.insert(
+            job_id.clone(),
+            crate::Job {
+                id: job_id.clone(),
+                status: "running".into(),
+                error_message: "".into(),
+                result: Value::Null,
+                progress: 0,
+                eta_ms: 0,
+            },
+        );
+
+        let state = Arc::new(Mutex::new(st));
+        let meta = ResponseMeta::new("req333", "pid555")
+            .with_job(state.clone(), job_id.clone());
+
+        finalize_job_if_needed("HTTP/1.0 500 Internal Server Error", "crash", &meta);
+
+        let st_guard = state.lock().unwrap();
+        let job = st_guard.jobs.get(&job_id).unwrap();
+        assert_eq!(job.status, "failed");
+        assert_eq!(job.error_message, "crash");
+        assert_eq!(job.result, Value::Null);
+    }
 }

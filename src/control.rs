@@ -62,6 +62,7 @@ pub fn load_jobs() -> Vec<Job> {
     Vec::new()
 }
 
+#[derive(Default)]
 pub struct ServerState {
     pub start_time: DateTime<Utc>,
     pub total_connections: usize,
@@ -207,5 +208,121 @@ impl ServerState {
             .iter()
             .map(|(cmd, stats)| (cmd.clone(), stats.latency_snapshot()))
             .collect()
+    }
+}
+
+
+// ==================== PRUEBAS ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::env;
+    use std::time::Duration;
+
+
+
+    #[test]
+    fn test_save_and_load_jobs() {
+        // Crear algunos trabajos simulados
+        let jobs = vec![
+            Job {
+                id: "1".into(),
+                status: "done".into(),
+                error_message: "".into(),
+                result: serde_json::json!({"ok": true}),
+                progress: 100,
+                eta_ms: 0,
+            },
+            Job {
+                id: "2".into(),
+                status: "running".into(),
+                error_message: "".into(),
+                result: serde_json::json!({"progress": 42}),
+                progress: 42,
+                eta_ms: 1234,
+            },
+        ];
+
+        save_jobs(&jobs);
+        let loaded = load_jobs();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "1");
+        assert_eq!(loaded[1].progress, 42);
+
+        // Limpieza
+        let _ = fs::remove_file(jobs_file_path());
+    }
+
+    #[test]
+    fn test_command_stats_basic_behavior() {
+        let mut stats = CommandStats::new("reverse");
+        assert_eq!(stats.command, "reverse");
+        assert_eq!(stats.in_flight, 0);
+        assert_eq!(stats.total_requests, 0);
+
+        stats.record_start();
+        assert_eq!(stats.in_flight, 1);
+        assert_eq!(stats.total_requests, 1);
+
+        stats.record_finish(15);
+        assert_eq!(stats.in_flight, 0);
+        let snap = stats.latency_snapshot();
+        assert_eq!(snap.count, 1);
+        assert_eq!(snap.p50, Some(15));
+    }
+
+    #[test]
+    fn test_latency_snapshot_with_multiple_values() {
+        let mut stats = CommandStats::new("factor");
+        for i in 1..=10 {
+            stats.record_finish(i * 10);
+        }
+        let snap = stats.latency_snapshot();
+        assert_eq!(snap.count, 10);
+        assert!(snap.p95.unwrap() >= snap.p50.unwrap());
+    }
+
+    #[test]
+    fn test_server_state_initialization() {
+        let state = new_state();
+        let st = state.lock().unwrap();
+
+        assert!(st.workers_for_command >= 1);
+        assert!(st.max_in_flight_per_command >= 1);
+        assert!(st.retry_after_ms >= 1);
+        assert!(st.task_timeout_ms >= 1);
+        assert_eq!(st.total_connections, 0);
+        assert!(st.command_stats.is_empty());
+    }
+
+    #[test]
+    fn test_server_state_records_and_snapshots() {
+        let mut st = ServerState::default();
+        st.ensure_command("reverse");
+        st.record_dispatch("reverse");
+        std::thread::sleep(Duration::from_millis(5));
+        st.record_completion("reverse", 8);
+
+        // snapshot de colas
+        let queues = st.queues_snapshot();
+        assert_eq!(queues.get("reverse"), Some(&0));
+
+        // snapshot de latencia
+        let lat = st.latency_snapshot();
+        let reverse_snap = lat.get("reverse").unwrap();
+        assert_eq!(reverse_snap.count, 1);
+        assert!(reverse_snap.p50.unwrap() <= 10);
+    }
+
+    #[test]
+    fn test_command_stats_capacity_limit() {
+        let mut stats = CommandStats::new("load");
+        for i in 0..(MAX_LATENCY_SAMPLES + 10) {
+            stats.record_finish(i as u128);
+        }
+        let snap = stats.latency_snapshot();
+        assert_eq!(snap.count as usize, MAX_LATENCY_SAMPLES);
     }
 }

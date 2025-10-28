@@ -498,3 +498,135 @@ fn header_length(buffer: &[u8]) -> usize {
         .map(|idx| idx + 4)
         .unwrap_or(buffer.len())
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+    use std::time::{Duration, Instant};
+    use std::io::{Write, Read};
+    use std::env;
+
+    // Helper: create a connected pair (client, server) using a short-lived listener.
+    fn connect_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind failed");
+        let addr = listener.local_addr().unwrap();
+        // spawn acceptor
+        let accept_thread = thread::spawn(move || {
+            let (socket, _) = listener.accept().expect("accept failed");
+            socket
+        });
+        // connect client
+        let client = TcpStream::connect(addr).expect("connect failed");
+        let server = accept_thread.join().expect("accept thread panicked");
+        (client, server)
+    }
+
+    #[test]
+    fn test_next_request_id_increments_and_format() {
+        let id1 = next_request_id();
+        let id2 = next_request_id();
+        assert!(id1.starts_with("req-"));
+        assert!(id2.starts_with("req-"));
+
+        // extract numeric suffix and ensure increasing (best-effort)
+        let n1 = id1.trim_start_matches("req-").parse::<u64>().ok();
+        let n2 = id2.trim_start_matches("req-").parse::<u64>().ok();
+        if let (Some(a), Some(b)) = (n1, n2) {
+            assert!(b > a);
+        }
+    }
+
+
+    #[test]
+    fn test_parse_query_basic_and_encoded() {
+        let q = "a=1&b=hello+world&c=%7Bjson%7D";
+        let m = parse_query(q);
+        assert_eq!(m.get("a").map(String::as_str), Some("1"));
+        assert_eq!(m.get("b").map(String::as_str), Some("hello world"));
+        assert_eq!(m.get("c").map(String::as_str), Some("{json}"));
+
+        // empty and trailing ampersand
+        let q2 = "x=1&&y=2&";
+        let m2 = parse_query(q2);
+        assert_eq!(m2.get("x").map(String::as_str), Some("1"));
+        assert_eq!(m2.get("y").map(String::as_str), Some("2"));
+    }
+
+    #[test]
+    fn test_headers_complete_and_header_length() {
+        let h = b"GET / HTTP/1.1\r\nHost: local\r\n\r\nBody";
+        assert!(headers_complete(h));
+        let len = header_length(h);
+        // header_length should point to end of headers (index after \r\n\r\n)
+        assert_eq!(len,  (b"GET / HTTP/1.1\r\nHost: local\r\n\r\n".len()));
+        // Without terminating sequence
+        let h2 = b"GET / HTTP/1.1\r\nHost: local\r\n";
+        assert!(!headers_complete(h2));
+        let len2 = header_length(h2);
+        assert_eq!(len2, h2.len());
+    }
+
+    #[test]
+    fn test_read_http_request_success_with_headers() {
+        let (mut client, mut server) = connect_pair();
+        // Write a simple request with headers terminator
+        let req = b"GET /foo?x=1 HTTP/1.1\r\nHost: test\r\n\r\n";
+        client.write_all(req).expect("write failed");
+        // Ensure server side is ready to read
+        server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let buf = read_http_request(&mut server).expect("should read request");
+        // header_length should be <= buf.len()
+        let hlen = header_length(&buf);
+        assert!(hlen <= buf.len());
+        // The header content should contain GET line
+        let header_text = String::from_utf8_lossy(&buf[..hlen]);
+        assert!(header_text.contains("GET /foo?x=1"));
+    }
+
+    #[test]
+    fn test_read_http_request_empty_stream_returns_eof_error() {
+        let (mut client, mut server) = connect_pair();
+        // Close client write side so server sees EOF
+        client.shutdown(std::net::Shutdown::Both).ok();
+        server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let res = read_http_request(&mut server);
+        assert!(res.is_err());
+        let err = res.err().unwrap();
+        // Expect UnexpectedEof
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn test_read_http_request_large_header_error() {
+        let (mut client, mut server) = connect_pair();
+        // Build a payload larger than MAX_REQUEST_SIZE without \r\n\r\n
+        let large = vec![b'a'; MAX_REQUEST_SIZE + 10];
+        client.write_all(&large).expect("write failed");
+        // Keep connection open; server should return InvalidData due to size limit
+        server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let res = read_http_request(&mut server);
+        assert!(res.is_err());
+        let err = res.err().unwrap();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_header_length_when_multiple_windows() {
+        // Ensure header_length picks first occurrence
+        let many = b"HEAD / A\r\nX: 1\r\n\r\nGET / B\r\n\r\n";
+        assert_eq!(header_length(many), (b"HEAD / A\r\nX: 1\r\n\r\n".len()));
+    }
+
+    // Small utility test: ensure parse_query handles '+' and percent-decoding edgecases
+    #[test]
+    fn test_parse_query_plus_and_percent_edgecases() {
+        let q = "+k+=+%21+%2B+";
+        // Interpreted as " k " -> " ! + " maybe strange but ensure no panic and decodes
+        let m = parse_query(q);
+        // since key becomes " k " and value becomes " ! + " depending on splitting, check map non-panicking
+        assert!(!m.is_empty());
+    }
+}

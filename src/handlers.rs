@@ -50,7 +50,8 @@ pub fn handle_command(
                     }),
                 );
             } else {
-                error400(stream_clone(stream), "missing 'text' parameter", meta);
+                return error400(stream_clone(stream), "missing 'text' parameter", meta);
+                
             }
             true
         }
@@ -66,7 +67,8 @@ pub fn handle_command(
                     }),
                 );
             } else {
-                error400(stream_clone(stream), "missing 'text' parameter", meta);
+                return error400(stream_clone(stream), "missing 'text' parameter", meta);
+                
             }
             true
         }
@@ -80,8 +82,8 @@ pub fn handle_command(
                     let value = fibonacci(n);
                     respond_json(stream, meta, json!({"num": n, "value": value}));
                 }
-                Some(_) => error400(stream_clone(stream), "num exceeds safe range (<=93)", meta),
-                None => error400(stream_clone(stream), "invalid or missing 'num'", meta),
+                Some(_) => return error400(stream_clone(stream), "num exceeds safe range (<=93)", meta),
+                None => return error400(stream_clone(stream), "invalid or missing 'num'", meta),
             }
             true
         }
@@ -89,15 +91,15 @@ pub fn handle_command(
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(n) if !n.is_empty() => n,
                 _ => {
-                    error400(stream_clone(stream), "missing 'name' parameter", meta);
-                    return true;
+                    return error400(stream_clone(stream), "missing 'name' parameter", meta);
+                    
                 }
             };
             let path = match sanitize_path(name) {
                 Ok(p) => p,
                 Err(msg) => {
-                    error400(stream_clone(stream), &msg, meta);
-                    return true;
+                    return error400(stream_clone(stream), &msg, meta);
+                    
                 }
             };
             let path_display = path.display().to_string();
@@ -107,22 +109,22 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(1);
             if repeat == 0 || repeat > MAX_REPEAT_WRITES {
-                error400(
+                return error400(
                     stream_clone(stream),
                     "repeat must be between 1 and 10000",
                     meta,
                 );
-                return true;
+                
             }
             let mut file = match File::create(&path) {
                 Ok(f) => f,
                 Err(err) => {
-                    error500(
+                    return error500(
                         stream_clone(stream),
                         &format!("unable to create {}: {}", path_display, err),
                         meta,
                     );
-                    return true;
+                    
                 }
             };
             let mut written: usize = 0;
@@ -133,8 +135,8 @@ pub fn handle_command(
                 }
                 let bytes = chunk.as_bytes();
                 if file.write_all(bytes).is_err() {
-                    error500(stream_clone(stream), "failed to write file", meta);
-                    return true;
+                    return error500(stream_clone(stream), "failed to write file", meta);
+                    
                 }
                 written += bytes.len();
             }
@@ -151,21 +153,21 @@ pub fn handle_command(
                     let path = match sanitize_path(name) {
                         Ok(p) => p,
                         Err(msg) => {
-                            error400(stream_clone(stream), &msg, meta);
-                            return true;
+                            return error400(stream_clone(stream), &msg, meta);
+                            
                         }
                     };
                     let display = path.display().to_string();
                     match fs::remove_file(&path) {
                         Ok(_) => respond_json(stream, meta, json!({"file": display, "deleted": true})),
-                        Err(err) => error500(
+                        Err(err) => return error500(
                             stream_clone(stream),
                             &format!("unable to delete {}: {}", display, err),
                             meta,
                         ),
                     }
                 }
-                None => error400(stream_clone(stream), "missing 'name' parameter", meta),
+                None => return error400(stream_clone(stream), "missing 'name' parameter", meta),
             }
             true
         }
@@ -175,12 +177,12 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(1);
             if count == 0 || count > MAX_RANDOM_COUNT {
-                error400(
+                return error400(
                     stream_clone(stream),
                     "count must be between 1 and 1024",
                     meta,
                 );
-                return true;
+                
             }
             let min = qmap
                 .get("min")
@@ -191,8 +193,8 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(100);
             if min > max {
-                error400(stream_clone(stream), "min must be <= max", meta);
-                return true;
+                return error400(stream_clone(stream), "min must be <= max", meta);
+                
             }
             let mut rng = thread_rng();
             let values: Vec<i64> = (0..count).map(|_| rng.gen_range(min..=max)).collect();
@@ -217,7 +219,7 @@ pub fn handle_command(
                     json!({"text": text, "algorithm": "sha256", "digest": digest}),
                 );
             } else {
-                error400(stream_clone(stream), "missing 'text' parameter", meta);
+                return error400(stream_clone(stream), "missing 'text' parameter", meta);
             }
             true
         }
@@ -357,7 +359,7 @@ pub fn handle_command(
                         }),
                     );
                 }
-                None => error400(stream_clone(stream), "invalid or missing 'n'", meta),
+                None => return error400(stream_clone(stream), "invalid or missing 'n'", meta),
             }
             true
         }
@@ -380,7 +382,7 @@ pub fn handle_command(
                         }),
                     );
                 }
-                None => error400(stream_clone(stream), "invalid or missing 'n'", meta),
+                None => return error400(stream_clone(stream), "invalid or missing 'n'", meta),
             }
             true
         }
@@ -391,7 +393,7 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(10);
             if digits == 0 || digits > MAX_PI_DIGITS {
-                error400(
+                return error400(
                     stream_clone(stream),
                     &format!("digits must be between 1 and {}", MAX_PI_DIGITS),
                     meta,
@@ -426,15 +428,15 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(50);
             if width == 0 || height == 0 || width > 1000 || height > 1000 || max_iter == 0 {
-                error400(stream_clone(stream), "invalid size or max_iter", meta);
-                return true;
+                return error400(stream_clone(stream), "invalid size or max_iter", meta);
+                
             }
             let sanitized_output = if let Some(target) = qmap.get("file") {
                 match sanitize_path(target) {
                     Ok(path) => Some(path),
                     Err(msg) => {
-                        error400(stream_clone(stream), &msg, meta);
-                        return true;
+                        return error400(stream_clone(stream), &msg, meta);
+                        
                     }
                 }
             } else {
@@ -471,8 +473,8 @@ pub fn handle_command(
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(100);
             if size == 0 || size > 600 {
-                error400(stream_clone(stream), "size must be between 1 and 600", meta);
-                return true;
+                return error400(stream_clone(stream), "size must be between 1 and 600", meta);
+                
             }
             let seed = qmap
                 .get("seed")
@@ -500,21 +502,21 @@ pub fn handle_command(
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) if !path.is_empty() => path,
                 _ => {
-                    error400(stream_clone(stream), "missing 'name' parameter", meta);
-                    return true;
+                    return error400(stream_clone(stream), "missing 'name' parameter", meta);
+                    
                 }
             };
             let path = match sanitize_path(name) {
                 Ok(p) => p,
                 Err(msg) => {
-                    error400(stream_clone(stream), &msg, meta);
-                    return true;
+                    return error400(stream_clone(stream), &msg, meta);
+                    
                 }
             };
             let algo = qmap.get("algo").map(String::as_str).unwrap_or("quick");
             if !matches!(algo, "quick" | "merge") {
-                error400(stream_clone(stream), "algo must be quick or merge", meta);
-                return true;
+                return error400(stream_clone(stream), "algo must be quick or merge", meta);
+                
             }
             let start = Instant::now();
             match sort_file(&path, algo, &guard) {
@@ -534,7 +536,7 @@ pub fn handle_command(
                 }
                 Err(HandlerError::Timeout) => return true,
                 Err(HandlerError::Message(err)) => {
-                    error500(stream_clone(stream), &err, meta)
+                    return error500(stream_clone(stream), &err, meta)
                 }
             }
             true
@@ -545,19 +547,19 @@ pub fn handle_command(
                     let path = match sanitize_path(name) {
                         Ok(p) => p,
                         Err(msg) => {
-                            error400(stream_clone(stream), &msg, meta);
-                            return true;
+                            return error400(stream_clone(stream), &msg, meta);
+                            
                         }
                     };
                     match word_count(&path, &guard) {
                         Ok(stats) => respond_json(stream, meta, stats),
                         Err(HandlerError::Timeout) => return true,
                         Err(HandlerError::Message(err)) => {
-                            error500(stream_clone(stream), &err, meta)
+                            return error500(stream_clone(stream), &err, meta)
                         }
                     }
                 }
-                None => error400(stream_clone(stream), "missing 'name' parameter", meta),
+                None => return error400(stream_clone(stream), "missing 'name' parameter", meta),
             }
             true
         }
@@ -565,40 +567,40 @@ pub fn handle_command(
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) => path,
                 None => {
-                    error400(stream_clone(stream), "missing 'name' parameter", meta);
-                    return true;
+                    return error400(stream_clone(stream), "missing 'name' parameter", meta);
+                    
                 }
             };
             let path = match sanitize_path(name) {
                 Ok(p) => p,
                 Err(msg) => {
-                    error400(stream_clone(stream), &msg, meta);
-                    return true;
+                    return error400(stream_clone(stream), &msg, meta);
+                    
                 }
             };
             let pattern = match qmap.get("pattern") {
                 Some(pat) => pat,
                 None => {
-                    error400(stream_clone(stream), "missing 'pattern'", meta);
-                    return true;
+                    return error400(stream_clone(stream), "missing 'pattern'", meta);
+                    
                 }
             };
             let regex = match Regex::new(pattern) {
                 Ok(r) => r,
                 Err(err) => {
-                    error400(
+                    return error400(
                         stream_clone(stream),
                         &format!("invalid regex: {}", err),
                         meta,
                     );
-                    return true;
+                    
                 }
             };
             match grep_file(&path, &regex, &guard) {
                 Ok(value) => respond_json(stream, meta, value),
                 Err(HandlerError::Timeout) => return true,
                 Err(HandlerError::Message(err)) => {
-                    error500(stream_clone(stream), &err, meta)
+                    return error500(stream_clone(stream), &err, meta)
                 }
             }
             true
@@ -607,27 +609,27 @@ pub fn handle_command(
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) => path,
                 None => {
-                    error400(stream_clone(stream), "missing 'name' parameter", meta);
-                    return true;
+                    return error400(stream_clone(stream), "missing 'name' parameter", meta);
+                    
                 }
             };
             let path = match sanitize_path(name) {
                 Ok(p) => p,
                 Err(msg) => {
-                    error400(stream_clone(stream), &msg, meta);
-                    return true;
+                    return error400(stream_clone(stream), &msg, meta);
+                    
                 }
             };
             let codec = qmap.get("codec").map(String::as_str).unwrap_or("gzip");
             if !matches!(codec, "gzip" | "xz") {
-                error400(stream_clone(stream), "codec must be gzip or xz", meta);
-                return true;
+                return error400(stream_clone(stream), "codec must be gzip or xz", meta);
+                
             }
             match compress_file(&path, codec, &guard) {
                 Ok(value) => respond_json(stream, meta, value),
                 Err(HandlerError::Timeout) => return true,
                 Err(HandlerError::Message(err)) => {
-                    error500(stream_clone(stream), &err, meta)
+                    return error500(stream_clone(stream), &err, meta)
                 }
             }
             true
@@ -636,21 +638,21 @@ pub fn handle_command(
             let name = match qmap.get("name").or_else(|| qmap.get("path")) {
                 Some(path) => path,
                 None => {
-                    error400(stream_clone(stream), "missing 'name' parameter", meta);
-                    return true;
+                    return error400(stream_clone(stream), "missing 'name' parameter", meta);
+                    
                 }
             };
             let path = match sanitize_path(name) {
                 Ok(p) => p,
                 Err(msg) => {
-                    error400(stream_clone(stream), &msg, meta);
-                    return true;
+                    return error400(stream_clone(stream), &msg, meta);
+                    
                 }
             };
             let algo = qmap.get("algo").map(String::as_str).unwrap_or("sha256");
             if algo != "sha256" {
-                error400(stream_clone(stream), "unsupported algo (only sha256)", meta);
-                return true;
+                return error400(stream_clone(stream), "unsupported algo (only sha256)", meta);
+                
             }
             match hash_file(&path, &guard) {
                 Ok(hash) => respond_json(
@@ -660,7 +662,7 @@ pub fn handle_command(
                 ),
                 Err(HandlerError::Timeout) => return true,
                 Err(HandlerError::Message(err)) => {
-                    error500(stream_clone(stream), &err, meta)
+                    return error500(stream_clone(stream), &err, meta)
                 }
             }
             true
@@ -670,8 +672,8 @@ pub fn handle_command(
             let task_value = match qmap.get("task").map(|s| s.trim()).filter(|s| !s.is_empty()) {
                 Some(task) => task,
                 None => {
-                    error400(stream_clone(stream), "missing 'task' parameter", meta);
-                    return true;
+                    return error400(stream_clone(stream), "missing 'task' parameter", meta);
+                    
                 }
             };
             let target_path = normalize_task_path(task_value);
@@ -679,8 +681,8 @@ pub fn handle_command(
             let job_id = {
                 let mut st = state.lock().unwrap();
                 if !st.pool_of_workers_for_command.contains_key(&target_path) {
-                    error404(stream_clone(stream), &target_path, meta);
-                    return true;
+                    return error404(stream_clone(stream), &target_path, meta);
+                    
                 }
                 let id = st.id_job_counter;
                 st.id_job_counter += 1;
@@ -721,8 +723,8 @@ pub fn handle_command(
 
             let Some(tx) = tx else {
                 mark_job_failed(state, &job_id, "No hay workers disponibles");
-                error500(stream_clone(stream), "No hay workers disponibles", meta);
-                return true;
+                return error500(stream_clone(stream), "No hay workers disponibles", meta);
+                
             };
 
             let path_and_args = build_task_invocation(&target_path, &qmap);
@@ -741,8 +743,8 @@ pub fn handle_command(
 
                     if tx.send(task).is_err() {
                         mark_job_failed(state, &job_id, "No se pudo encolar la tarea");
-                        error500(stream_clone(stream), "Error despachando tarea", meta);
-                        return true;
+                        return error500(stream_clone(stream), "Error despachando tarea", meta);
+                        
                     }
 
                     {
@@ -752,12 +754,12 @@ pub fn handle_command(
                 }
                 Err(e) => {
                     mark_job_failed(state, &job_id, "No se pudo clonar el socket");
-                    error500(
+                    return error500(
                         stream_clone(stream),
                         &format!("No se pudo clonar el socket: {}", e),
                         meta,
                     );
-                    return true;
+                    
                 }
             }
 
@@ -772,8 +774,8 @@ pub fn handle_command(
             let job_id = match extract_job_id(qmap) {
                 Ok(id) => id,
                 Err(msg) => {
-                    error400(stream_clone(stream), &msg, meta);
-                    return true;
+                    return error400(stream_clone(stream), &msg, meta);
+                   
                 }
             };
 
@@ -788,7 +790,7 @@ pub fn handle_command(
                 });
                 respond_json(stream, meta, result);
             } else {
-                error404(stream_clone(stream), "job not found", meta);
+                return error404(stream_clone(stream), "job not found", meta);
             }
             true
         }
@@ -796,8 +798,8 @@ pub fn handle_command(
             let job_id = match extract_job_id(qmap) {
                 Ok(id) => id,
                 Err(msg) => {
-                    error400(stream_clone(stream), &msg, meta);
-                    return true;
+                    return error400(stream_clone(stream), &msg, meta);
+                    
                 }
             };
 
@@ -813,16 +815,16 @@ pub fn handle_command(
                         }),
                     );
                 } else if job.status == "failed" {
-                    error500(
+                    return error500(
                         stream_clone(stream),
                         &format!("job {} failed: {}", job.id, job.error_message),
                         meta,
                     );
                 } else {
-                    error409(stream_clone(stream), "job not finished", meta);
+                    return error409(stream_clone(stream), "job not finished", meta);
                 }
             } else {
-                error404(stream_clone(stream), "job not found", meta);
+                return error404(stream_clone(stream), "job not found", meta);
             }
             true
         }
@@ -830,8 +832,8 @@ pub fn handle_command(
             let job_id = match extract_job_id(qmap) {
                 Ok(id) => id,
                 Err(msg) => {
-                    error400(stream_clone(stream), &msg, meta);
-                    return true;
+                    return error400(stream_clone(stream), &msg, meta);
+                    
                 }
             };
 
@@ -862,11 +864,11 @@ pub fn handle_command(
                         );
                     }
                     _ => {
-                        error409(stream_clone(stream), &json!({"status": "not_cancelable"}).to_string(), meta);
+                        return error409(stream_clone(stream), &json!({"status": "not_cancelable"}).to_string(), meta);
                     }
                 }
             } else {
-                error404(stream_clone(stream), "job not found", meta);
+                return error404(stream_clone(stream), "job not found", meta);
             }
             true
         }
@@ -1529,4 +1531,337 @@ fn allowed_roots() -> Vec<PathBuf> {
         roots.push(absolute);
     }
     roots
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
+    use std::net::{TcpListener, TcpStream};
+    use crate::control::{SharedState, Job};
+
+    // ------------------------------
+    // Helpers
+    // ------------------------------
+
+    fn dummy_stream() -> TcpStream {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || { let _ = listener.accept(); });
+        TcpStream::connect(addr).unwrap()
+    }
+
+    fn dummy_state() -> SharedState {
+        Arc::new(Mutex::new(crate::control::ServerState::default()))
+    }
+
+    fn dummy_meta() -> ResponseMeta {
+        ResponseMeta::new("test".to_string(), "false".to_string()) // segundo campo como String
+    }
+
+
+    fn run_cmd(path: &str, params: HashMap<String, String>) -> bool {
+        let s = dummy_stream();
+        let state = dummy_state();
+        let meta = dummy_meta();
+        let result = handle_command(path, &params, &s, &meta, &state, Instant::now() + Duration::from_secs(5));
+        println!("Command '{}' with params {:?} returned {}", path, params, result);
+        result
+    }
+
+    // ------------------------------
+    // 1. Funciones de texto
+    // ------------------------------
+
+    #[test]
+    fn test_reverse() {
+        let mut p = HashMap::new();
+        p.insert("text".to_string(), "abc".to_string());
+        assert!(run_cmd("/reverse", p.clone()));
+
+        p.insert("text".to_string(), "".to_string());
+        assert!(run_cmd("/reverse", p));
+
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(!run_cmd("/reverse", p)); // sin parámetro → 400
+    }
+
+    #[test]
+    fn test_toupper() {
+        let mut p = HashMap::new();
+        p.insert("text".to_string(), "abc".to_string());
+        assert!(run_cmd("/toupper", p.clone()));
+
+        p.insert("text".to_string(), "AbC123".to_string());
+        assert!(run_cmd("/toupper", p));
+
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(!run_cmd("/toupper", p));
+    }
+
+      // ------------------------------
+    // 2. Funciones matemáticas
+    // ------------------------------
+
+    #[test]
+    fn test_fibonacci() {
+        for num in &[0,1,10,93] {
+            let mut p = HashMap::new();
+            p.insert("num".to_string(), num.to_string());
+            assert!(run_cmd("/fibonacci", p));
+        }
+
+        let mut p = HashMap::new();
+        p.insert("num".to_string(), "94".to_string());
+        assert!(!run_cmd("/fibonacci", p));
+
+        let mut p = HashMap::new();
+        p.insert("num".to_string(), "abc".to_string());
+        assert!(!run_cmd("/fibonacci", p));
+
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(!run_cmd("/fibonacci", p));
+    }
+
+    #[test]
+    fn test_random() {
+        let mut p = HashMap::new();
+        p.insert("count".to_string(), "0".to_string());
+        assert!(!run_cmd("/random", p.clone()));
+
+        p.insert("count".to_string(), "1".to_string());
+        assert!(run_cmd("/random", p.clone()));
+
+        // min > max
+        p.insert("min".to_string(), "10".to_string());
+        p.insert("max".to_string(), "0".to_string());
+        assert!(!run_cmd("/random", p));
+
+        // parámetros inválidos
+        let mut p = HashMap::new();
+        p.insert("count".to_string(), "abc".to_string());
+        assert!(!run_cmd("/random", p));
+    }
+
+    #[test]
+    fn test_isprime() {
+        for n in &[2,3,13] {
+            let mut p = HashMap::new();
+            p.insert("n".to_string(), n.to_string());
+            assert!(run_cmd("/isprime", p));
+        }
+        for n in &[0,1,4,15] {
+            let mut p = HashMap::new();
+            p.insert("n".to_string(), n.to_string());
+            assert!(run_cmd("/isprime", p));
+        }
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(!run_cmd("/isprime", p));
+    }
+
+    #[test]
+    fn test_factor() {
+        for n in &[6,13] {
+            let mut p = HashMap::new();
+            p.insert("n".to_string(), n.to_string());
+            assert!(run_cmd("/factor", p));
+        }
+        let mut p = HashMap::new();
+        p.insert("n".to_string(), (2_u64.pow(10) * 3_u64.pow(5)).to_string());
+        assert!(run_cmd("/factor", p));
+
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(!run_cmd("/factor", p));
+    }
+
+    #[test]
+    fn test_pi() {
+        for d in &[1,10,crate::handlers::MAX_PI_DIGITS] {
+            let mut p = HashMap::new();
+            p.insert("digits".to_string(), d.to_string());
+            assert!(run_cmd("/pi", p));
+        }
+        let mut p = HashMap::new();
+        p.insert("digits".to_string(), "0".to_string());
+        assert!(!run_cmd("/pi", p));
+
+        let mut p = HashMap::new();
+        p.insert("digits".to_string(), (crate::handlers::MAX_PI_DIGITS+1).to_string());
+        assert!(!run_cmd("/pi", p));
+    }
+
+    // ------------------------------
+    // 3. Archivos
+    // ------------------------------
+
+    #[test]
+    fn test_create_delete_sort_wordcount_grep_compress_hashfile() {
+        let filename = "testfile.txt";
+
+        // createfile
+        let mut p = HashMap::new();
+        p.insert("name".to_string(), filename.to_string());
+        p.insert("content".to_string(), "a b c".to_string());
+        assert!(run_cmd("/createfile", p.clone()));
+
+        // createfile sin name
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(!run_cmd("/createfile", p));
+
+        // sortfile
+        let mut p = HashMap::new();
+        p.insert("name".to_string(), filename.to_string());
+        p.insert("algo".to_string(), "quick".to_string());
+        assert!(run_cmd("/sortfile", p.clone()));
+        p.insert("algo".to_string(), "merge".to_string());
+        assert!(run_cmd("/sortfile", p));
+
+        // sortfile algo inválido
+        let mut p = HashMap::new();
+        p.insert("name".to_string(), filename.to_string());
+        p.insert("algo".to_string(), "invalid".to_string());
+        assert!(!run_cmd("/sortfile", p));
+
+        // wordcount
+        let mut p = HashMap::new();
+        p.insert("name".to_string(), filename.to_string());
+        assert!(run_cmd("/wordcount", p));
+
+        // grep
+        let mut p = HashMap::new();
+        p.insert("name".to_string(), filename.to_string());
+        p.insert("pattern".to_string(), "a".to_string());
+        assert!(run_cmd("/grep", p.clone()));
+        p.insert("pattern".to_string(), "z".to_string());
+        assert!(run_cmd("/grep", p));
+
+        // grep inválido
+        let mut p = HashMap::new();
+        p.insert("name".to_string(), filename.to_string());
+        p.insert("pattern".to_string(), "[".to_string()); // regex inválido
+        assert!(!run_cmd("/grep", p));
+
+        // compress
+        let mut p = HashMap::new();
+        p.insert("name".to_string(), filename.to_string());
+        p.insert("codec".to_string(), "gzip".to_string());
+        assert!(run_cmd("/compress", p.clone()));
+        p.insert("codec".to_string(), "xz".to_string());
+        assert!(run_cmd("/compress", p.clone()));
+        p.insert("codec".to_string(), "invalid".to_string());
+        assert!(!run_cmd("/compress", p));
+
+        // hashfile
+        let mut p = HashMap::new();
+        p.insert("name".to_string(), filename.to_string());
+        p.insert("algo".to_string(), "sha256".to_string());
+        assert!(run_cmd("/hashfile", p.clone()));
+        p.insert("algo".to_string(), "invalid".to_string());
+        assert!(!run_cmd("/hashfile", p));
+    }
+
+    // ------------------------------
+    // 4. Simulación y tiempo
+    // ------------------------------
+
+    #[test]
+    fn test_timestamp_sleep_simulate_loadtest() {
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(run_cmd("/timestamp", p.clone()));
+
+        let mut p = HashMap::new();
+        p.insert("seconds".to_string(), "0".to_string());
+        assert!(run_cmd("/sleep", p.clone()));
+
+        let mut p = HashMap::new();
+        p.insert("seconds".to_string(), "1".to_string());
+        assert!(run_cmd("/simulate", p.clone()));
+
+        let mut p = HashMap::new();
+        p.insert("tasks".to_string(), "0".to_string());
+        p.insert("sleep".to_string(), "0".to_string());
+        assert!(run_cmd("/loadtest", p.clone()));
+    }
+
+    // ------------------------------
+    // 5. Cálculos complejos
+    // ------------------------------
+
+    #[test]
+    fn test_mandelbrot_matrixmul() {
+        let mut p = HashMap::new();
+        p.insert("width".to_string(), "10".to_string());
+        p.insert("height".to_string(), "10".to_string());
+        p.insert("max_iter".to_string(), "10".to_string());
+        assert!(run_cmd("/mandelbrot", p.clone()));
+
+        let mut p = HashMap::new();
+        p.insert("size".to_string(), "1".to_string());
+        assert!(run_cmd("/matrixmul", p.clone()));
+    }
+
+    // ------------------------------
+    // 6. Hash y otros
+    // ------------------------------
+
+    #[test]
+    fn test_hash() {
+        let mut p = HashMap::new();
+        p.insert("text".to_string(), "abc".to_string());
+        assert!(run_cmd("/hash", p.clone()));
+
+        p.insert("text".to_string(), "".to_string());
+        assert!(run_cmd("/hash", p.clone()));
+
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(!run_cmd("/hash", p));
+    }
+
+    // ------------------------------
+    // 7. Jobs
+    // ------------------------------
+
+    #[test]
+    fn test_jobs_endpoints() {
+        let state = dummy_state();
+        let s = dummy_stream();
+        let meta = dummy_meta();
+
+        // submit job válido
+        let mut p = HashMap::new();
+        p.insert("task".to_string(), "reverse".to_string());
+        handle_command("/jobs/submit", &p, &s, &meta, &state, Instant::now()+Duration::from_secs(5));
+
+        // submit sin task
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(!run_cmd("/jobs/submit", p));
+
+        // status sin id
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(!run_cmd("/jobs/status", p));
+
+        // result sin id
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(!run_cmd("/jobs/result", p));
+
+        // cancel sin id
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(!run_cmd("/jobs/cancel", p));
+    }
+
+    // ------------------------------
+    // 8. Auxiliares
+    // ------------------------------
+
+    #[test]
+    fn test_help_metrics() {
+        let p: HashMap<String,String> = HashMap::new();
+        assert!(run_cmd("/help", p.clone()));
+        assert!(run_cmd("/metrics", p));
+    }
+
 }
