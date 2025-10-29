@@ -1427,7 +1427,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
 }
-
+#[derive(Debug)]
 enum HandlerError {
     Timeout,
     Message(String),
@@ -1552,6 +1552,8 @@ mod tests {
     use std::time::{Duration, Instant};
     use std::net::{TcpListener, TcpStream};
     use crate::control::{SharedState, Job};
+    use serde_json::json;
+    use regex::Regex;
 
     // ------------------------------
     // Helpers
@@ -1572,6 +1574,7 @@ mod tests {
         ResponseMeta::new("test".to_string(), "false".to_string()) // segundo campo como String
     }
 
+    
 
     fn run_cmd(path: &str, params: HashMap<String, String>) -> bool {
         let s = dummy_stream();
@@ -1872,5 +1875,173 @@ mod tests {
         assert!(run_cmd("/help", p.clone()));
         assert!(run_cmd("/metrics", p));
     }
+
+    // ------------------------------
+    // 9. Funciones internas
+    // ------------------------------
+
+    #[test]
+    fn test_fibonacci_basic() {
+        assert_eq!(fibonacci(0), 0);
+        assert_eq!(fibonacci(1), 1);
+        assert_eq!(fibonacci(2), 1);
+        assert_eq!(fibonacci(5), 5);
+        assert_eq!(fibonacci(10), 55);
+    }
+
+    #[test]
+    fn test_build_task_invocation() {
+        let mut qmap = HashMap::new();
+        qmap.insert("x".into(), "10".into());
+        qmap.insert("y".into(), "20".into());
+        let s = build_task_invocation("/sum", &qmap);
+        assert!(
+            s == "/sum?x=10&y=20" || s == "/sum?y=20&x=10",
+            "Got: {}", s
+        );
+    }
+
+    #[test]
+    fn test_build_task_invocation_empty() {
+        let qmap: HashMap<String, String> = HashMap::new();
+        assert_eq!(build_task_invocation("/reverse", &qmap), "/reverse");
+    }
+
+    #[test]
+    fn test_normalize_task_path() {
+        assert_eq!(normalize_task_path("reverse"), "/reverse");
+        assert_eq!(normalize_task_path("/reverse"), "/reverse");
+    }
+
+    #[test]
+    fn test_extract_job_id_ok() {
+        let mut q = HashMap::new();
+        q.insert("id".to_string(), "abc123".to_string());
+        assert_eq!(extract_job_id(&q).unwrap(), "abc123");
+    }
+
+    #[test]
+    fn test_extract_job_id_missing() {
+        let q = HashMap::new();
+        assert!(extract_job_id(&q).is_err());
+    }
+
+    // =====================
+    // FUNCIONES DE CÁLCULO
+    // =====================
+
+    #[test]
+    fn test_check_prime_basic() {
+        // Crear stream local
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(addr).unwrap();
+
+        // Meta falsa
+        let meta =dummy_meta();
+
+        // Crear TimeoutGuard válido
+        let g = TimeoutGuard::new(Instant::now() + Duration::from_secs(5), &stream, &meta);
+
+        assert_eq!(check_prime(1, &g).unwrap(), false);
+        assert_eq!(check_prime(2, &g).unwrap(), true);
+        assert_eq!(check_prime(3, &g).unwrap(), true);
+        assert_eq!(check_prime(4, &g).unwrap(), false);
+        assert_eq!(check_prime(17, &g).unwrap(), true);
+    }
+
+    #[test]
+    fn test_factorize_small_numbers() {
+        // Crear stream local
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(addr).unwrap();
+
+        // Meta falsa
+        let meta =dummy_meta();
+
+        // Crear TimeoutGuard válido
+        let g = TimeoutGuard::new(Instant::now() + Duration::from_secs(5), &stream, &meta);
+        assert_eq!(factorize(1, &g).unwrap(), vec![(1, 1)]);
+        assert_eq!(factorize(2, &g).unwrap(), vec![(2, 1)]);
+        assert_eq!(factorize(12, &g).unwrap(), vec![(2, 2), (3, 1)]);
+    }
+
+    #[test]
+    fn test_sha256_hex() {
+        let h = sha256_hex(b"hello");
+        assert_eq!(
+            h,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    // =====================
+    // FUNCIONES CON ARCHIVOS
+    // =====================
+
+    #[test]
+    fn test_word_count_simple() {
+        let path = Path::new("test_wc.txt");
+        std::fs::write(path, "hola mundo\nsegunda linea").unwrap();
+        // Crear stream local
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(addr).unwrap();
+
+        // Meta falsa
+        let meta =dummy_meta();
+
+        // Crear TimeoutGuard válido
+        let g = TimeoutGuard::new(Instant::now() + Duration::from_secs(5), &stream, &meta);
+        let res = word_count(path, &g).unwrap();
+        assert_eq!(res["lines"], 2);
+        assert_eq!(res["words"], 4);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_grep_file_basic() {
+        let path = Path::new("test_grep.txt");
+        std::fs::write(path, "hola\nadios\nhola mundo").unwrap();
+        // Crear stream local
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(addr).unwrap();
+
+        // Meta falsa
+        let meta =dummy_meta();
+
+        // Crear TimeoutGuard válido
+        let g = TimeoutGuard::new(Instant::now() + Duration::from_secs(5), &stream, &meta);
+        let re = Regex::new("hola").unwrap();
+        let res = grep_file(path, &re, &g).unwrap();
+        assert_eq!(res["matches"], 2);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_hash_file_basic() {
+        let path = Path::new("test_hash.txt");
+        std::fs::write(path, "abc").unwrap();
+        // Crear stream local
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(addr).unwrap();
+
+        // Meta falsa
+        let meta =dummy_meta();
+
+        // Crear TimeoutGuard válido
+        let g = TimeoutGuard::new(Instant::now() + Duration::from_secs(5), &stream, &meta);
+        let h = hash_file(path, &g).unwrap();
+        assert_eq!(
+            h,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+
 
 }
