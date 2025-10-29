@@ -140,5 +140,5 @@ Las rutas están agrupadas en categorías para facilitar la exploración; todas 
 ## Recursos útiles
 - Scripts auxiliares: `test_basic.sh`, `test_endpoints.sh`, `test_server.sh`.
 - Datos de prueba: `data.txt`, `data2.txt`, `data.txt.gz`.
-- Snapshot de pruebas manuales: captura de Postman incluida en la carpeta raíz `P01_SO`.
+- Snapshot de pruebas manuales: captura de Postman incluidas en el documento 
 
