@@ -142,4 +142,3 @@ Las rutas están agrupadas en categorías para facilitar la exploración; todas 
 - Datos de prueba: `data.txt`, `data2.txt`, `data.txt.gz`.
 - Snapshot de pruebas manuales: captura de Postman incluida en la carpeta raíz `P01_SO`.
 
-Con esto deberías contar con todo lo necesario para compilar, ejecutar, probar y entender la arquitectura del proyecto. ¡Buen hacking!
