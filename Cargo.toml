@@ -1,7 +1,11 @@
 [package]
 name    = "Proyecto_1"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[lib]
+name = "proyecto_1"
+path = "src/lib.rs"
 
 [dependencies]
 # Para fechas y permitir serialización con serde
@@ -16,5 +20,4 @@ rand = "0.8"
 sha2 = "0.10"
 flate2 = "1"
 regex = "1"
-xz2 = "0.1"
 ctrlc = "3.5.0"

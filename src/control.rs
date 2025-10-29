@@ -35,7 +35,11 @@ pub struct Job {
     pub result: Value,
     pub progress: u8,
     pub eta_ms: u64,
-
+    pub created_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub task_type: String,
+    pub task_params: Value,
 }
 
 pub fn jobs_file_path() -> PathBuf {
@@ -101,6 +105,29 @@ pub fn new_state() -> SharedState {
         max_in_flight_per_command,
         retry_after_ms,
         task_timeout_ms,
+    }))
+}
+
+pub fn new_state_with_config(
+    workers_for_command: usize,
+    max_in_flight_per_command: usize,
+    retry_after_ms: u64,
+    task_timeout_ms: u64,
+) -> SharedState {
+    Arc::new(Mutex::new(ServerState {
+        start_time: Utc::now(),
+        total_connections: 0,
+        pid: std::process::id(),
+        workers: Vec::new(),
+        command_stats: HashMap::new(),
+        jobs: HashMap::new(),
+        id_job_counter: 0,
+        pool_of_workers_for_command: HashMap::new(),
+        counters: HashMap::new(),
+        workers_for_command: workers_for_command.max(1),
+        max_in_flight_per_command: max_in_flight_per_command.max(1),
+        retry_after_ms: retry_after_ms.max(1),
+        task_timeout_ms: task_timeout_ms.max(1),
     }))
 }
 
@@ -234,6 +261,11 @@ mod tests {
                 result: serde_json::json!({"ok": true}),
                 progress: 100,
                 eta_ms: 0,
+                created_at: Utc::now(),
+                started_at: Some(Utc::now()),
+                completed_at: Some(Utc::now()),
+                task_type: "test".into(),
+                task_params: serde_json::json!({}),
             },
             Job {
                 id: "2".into(),
@@ -242,6 +274,11 @@ mod tests {
                 result: serde_json::json!({"progress": 42}),
                 progress: 42,
                 eta_ms: 1234,
+                created_at: Utc::now(),
+                started_at: Some(Utc::now()),
+                completed_at: None,
+                task_type: "test".into(),
+                task_params: serde_json::json!({}),
             },
         ];
 

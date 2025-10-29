@@ -1,7 +1,7 @@
 mod control;
 mod errors;
 mod handlers;
-use control::{new_state, WorkerInfo, Task,save_jobs,load_jobs,Job};
+use control::{new_state_with_config, WorkerInfo, Task,save_jobs,load_jobs,Job};
 use handlers::handle_command;
 
 use std::collections::HashMap;
@@ -26,25 +26,170 @@ fn next_request_id() -> String {
     format!("req-{}", id)
 }
 
-fn resolve_bind_addr() -> String {
-    let mut bind = std::env::var("P01_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        if arg == "--bind" {
-            if let Some(value) = args.next() {
-                bind = value;
-            }
-        } else if let Some(value) = arg.strip_prefix("--bind=") {
-            bind = value.to_string();
+#[derive(Debug, Clone)]
+struct Config {
+    bind_addr: String,
+    workers_per_command: usize,
+    max_in_flight_per_command: usize,
+    retry_after_ms: u64,
+    task_timeout_ms: u64,
+    data_dir: Option<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            bind_addr: "127.0.0.1:8080".to_string(),
+            workers_per_command: 2,
+            max_in_flight_per_command: 32,
+            retry_after_ms: 250,
+            task_timeout_ms: 60_000,
+            data_dir: None,
         }
     }
-    bind
+}
+
+fn parse_config() -> Config {
+    let mut config = Config::default();
+    
+    // Leer variables de entorno
+    if let Ok(addr) = std::env::var("P01_BIND_ADDR") {
+        config.bind_addr = addr;
+    }
+    if let Ok(workers) = std::env::var("P01_WORKERS_PER_COMMAND") {
+        if let Ok(n) = workers.parse::<usize>() {
+            config.workers_per_command = n.max(1);
+        }
+    }
+    if let Ok(max_inflight) = std::env::var("P01_MAX_INFLIGHT") {
+        if let Ok(n) = max_inflight.parse::<usize>() {
+            config.max_in_flight_per_command = n.max(1);
+        }
+    }
+    if let Ok(retry) = std::env::var("P01_RETRY_AFTER_MS") {
+        if let Ok(n) = retry.parse::<u64>() {
+            config.retry_after_ms = n.max(1);
+        }
+    }
+    if let Ok(timeout) = std::env::var("P01_TASK_TIMEOUT_MS") {
+        if let Ok(n) = timeout.parse::<u64>() {
+            config.task_timeout_ms = n.max(1);
+        }
+    }
+    if let Ok(data_dir) = std::env::var("P01_DATA_DIR") {
+        config.data_dir = Some(data_dir);
+    }
+    
+    // Parsear argumentos CLI
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--bind" => {
+                if let Some(value) = args.next() {
+                    config.bind_addr = value;
+                }
+            }
+            "--workers" => {
+                if let Some(value) = args.next() {
+                    if let Ok(n) = value.parse::<usize>() {
+                        config.workers_per_command = n.max(1);
+                    }
+                }
+            }
+            "--max-inflight" => {
+                if let Some(value) = args.next() {
+                    if let Ok(n) = value.parse::<usize>() {
+                        config.max_in_flight_per_command = n.max(1);
+                    }
+                }
+            }
+            "--retry-after" => {
+                if let Some(value) = args.next() {
+                    if let Ok(n) = value.parse::<u64>() {
+                        config.retry_after_ms = n.max(1);
+                    }
+                }
+            }
+            "--timeout" => {
+                if let Some(value) = args.next() {
+                    if let Ok(n) = value.parse::<u64>() {
+                        config.task_timeout_ms = n.max(1);
+                    }
+                }
+            }
+            "--data-dir" => {
+                if let Some(value) = args.next() {
+                    config.data_dir = Some(value);
+                }
+            }
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
+            }
+            _ => {
+                if arg.starts_with("--bind=") {
+                    config.bind_addr = arg.strip_prefix("--bind=").unwrap().to_string();
+                } else if arg.starts_with("--workers=") {
+                    if let Ok(n) = arg.strip_prefix("--workers=").unwrap().parse::<usize>() {
+                        config.workers_per_command = n.max(1);
+                    }
+                } else if arg.starts_with("--max-inflight=") {
+                    if let Ok(n) = arg.strip_prefix("--max-inflight=").unwrap().parse::<usize>() {
+                        config.max_in_flight_per_command = n.max(1);
+                    }
+                } else if arg.starts_with("--retry-after=") {
+                    if let Ok(n) = arg.strip_prefix("--retry-after=").unwrap().parse::<u64>() {
+                        config.retry_after_ms = n.max(1);
+                    }
+                } else if arg.starts_with("--timeout=") {
+                    if let Ok(n) = arg.strip_prefix("--timeout=").unwrap().parse::<u64>() {
+                        config.task_timeout_ms = n.max(1);
+                    }
+                } else if arg.starts_with("--data-dir=") {
+                    config.data_dir = Some(arg.strip_prefix("--data-dir=").unwrap().to_string());
+                }
+            }
+        }
+    }
+    
+    config
+}
+
+fn print_help() {
+    println!("Servidor HTTP/1.0 - Proyecto Sistemas Operativos");
+    println!();
+    println!("Uso: {} [OPCIONES]", std::env::args().next().unwrap_or("servidor".to_string()));
+    println!();
+    println!("Opciones:");
+    println!("  --bind ADDR              Dirección de enlace (default: 127.0.0.1:8080)");
+    println!("  --workers N              Workers por comando (default: 2)");
+    println!("  --max-inflight N         Máximo requests en vuelo por comando (default: 32)");
+    println!("  --retry-after MS         Tiempo de retry en ms (default: 250)");
+    println!("  --timeout MS             Timeout de tareas en ms (default: 60000)");
+    println!("  --data-dir DIR           Directorio de datos (default: directorio actual)");
+    println!("  --help, -h               Mostrar esta ayuda");
+    println!();
+    println!("Variables de entorno:");
+    println!("  P01_BIND_ADDR            Dirección de enlace");
+    println!("  P01_WORKERS_PER_COMMAND  Workers por comando");
+    println!("  P01_MAX_INFLIGHT         Máximo requests en vuelo por comando");
+    println!("  P01_RETRY_AFTER_MS       Tiempo de retry en ms");
+    println!("  P01_TASK_TIMEOUT_MS      Timeout de tareas en ms");
+    println!("  P01_DATA_DIR             Directorio de datos");
 }
 
 fn main() -> io::Result<()> {
+    let config = parse_config();
+    println!("Configuración: {:?}", config);
+    
     let loaded_jobs = load_jobs();
     // Estado compartido
-    let state = new_state();
+    let state = new_state_with_config(
+        config.workers_per_command,
+        config.max_in_flight_per_command,
+        config.retry_after_ms,
+        config.task_timeout_ms,
+    );
     {
         let mut st = state.lock().unwrap();
         let mut last_id = 0u64;
@@ -72,9 +217,8 @@ fn main() -> io::Result<()> {
         }
     }).expect("Error configurando Ctrl-C handler");
 
-    let bind_addr = resolve_bind_addr();
-    let listener = TcpListener::bind(&bind_addr)?;
-    println!("Servidor iniciado en http://{}", bind_addr);
+    let listener = TcpListener::bind(&config.bind_addr)?;
+    println!("Servidor iniciado en http://{}", config.bind_addr);
 
     // Lista de comandos imlementados
     let commands = vec![

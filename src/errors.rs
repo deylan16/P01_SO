@@ -2,6 +2,7 @@ use crate::control::SharedState;
 use serde_json::{json, Value};
 use std::io::Write;
 use std::net::TcpStream;
+use chrono::Utc;
 
 #[derive(Clone)]
 pub struct JobResponseMeta {
@@ -195,10 +196,13 @@ fn finalize_job_if_needed(status_line: &str, body: &str, meta: &ResponseMeta) ->
             job.status = "done".to_string();
             job.result = parsed;
             job.error_message.clear();
+            job.progress = 100;
+            job.completed_at = Some(Utc::now());
         } else {
             job.status = "failed".to_string();
             job.error_message = body.to_string();
             job.result = Value::Null;
+            job.completed_at = Some(Utc::now());
         }
     }
     true
@@ -270,6 +274,11 @@ mod tests {
                 result: Value::Null,
                 progress: 0,
                 eta_ms: 0,
+                created_at: Utc::now(),
+                started_at: Some(Utc::now()),
+                completed_at: None,
+                task_type: "test".into(),
+                task_params: Value::Null,
             },
         );
 
@@ -301,6 +310,11 @@ mod tests {
                 result: Value::Null,
                 progress: 0,
                 eta_ms: 0,
+                created_at: Utc::now(),
+                started_at: Some(Utc::now()),
+                completed_at: None,
+                task_type: "test".into(),
+                task_params: Value::Null,
             },
         );
 

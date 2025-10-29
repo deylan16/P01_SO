@@ -17,7 +17,6 @@ use rand::{Rng, SeedableRng, thread_rng};
 use regex::Regex;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use xz2::write::XzEncoder;
 
 use crate::control::{Job, SharedState,Task};
 use crate::errors::{ResponseMeta,error404, error400, error409, error500, error503_json, res200_json};
@@ -244,7 +243,7 @@ pub fn handle_command(
                 "GET /sortfile?name=..&algo=merge|quick",
                 "GET /wordcount?name=..",
                 "GET /grep?name=..&pattern=..",
-                "GET /compress?name=..&codec=gzip|xz",
+                "GET /compress?name=..&codec=gzip",
                 "GET /hashfile?name=..&algo=sha256",
                 "GET /metrics",
             ];
@@ -398,7 +397,6 @@ pub fn handle_command(
                     &format!("digits must be between 1 and {}", MAX_PI_DIGITS),
                     meta,
                 );
-                return true;
             }
             let start = Instant::now();
             let pi = match compute_pi_digits(digits, &guard) {
@@ -621,8 +619,8 @@ pub fn handle_command(
                 }
             };
             let codec = qmap.get("codec").map(String::as_str).unwrap_or("gzip");
-            if !matches!(codec, "gzip" | "xz") {
-                return error400(stream_clone(stream), "codec must be gzip or xz", meta);
+            if codec != "gzip" {
+                return error400(stream_clone(stream), "codec must be gzip (xz not supported)", meta);
                 
             }
             match compress_file(&path, codec, &guard) {
@@ -696,6 +694,11 @@ pub fn handle_command(
                         result: Value::Null,
                         progress: 0,
                         eta_ms: 0,
+                        created_at: Utc::now(),
+                        started_at: None,
+                        completed_at: None,
+                        task_type: target_path.clone(),
+                        task_params: json!(qmap),
                     },
                 );
                 job_id
@@ -875,10 +878,30 @@ pub fn handle_command(
         "/metrics" => {
             let snapshot = {
                 let st = state.lock().unwrap();
+                let uptime = (Utc::now() - st.start_time).num_seconds();
                 json!({
+                    "uptime_seconds": uptime,
+                    "total_connections": st.total_connections,
+                    "pid": st.pid,
                     "queues": st.queues_snapshot(),
                     "workers": summarize_workers(&st.workers),
-                    "latency_ms": st.latency_snapshot()
+                    "latency_ms": st.latency_snapshot(),
+                    "config": {
+                        "workers_per_command": st.workers_for_command,
+                        "max_in_flight_per_command": st.max_in_flight_per_command,
+                        "retry_after_ms": st.retry_after_ms,
+                        "task_timeout_ms": st.task_timeout_ms
+                    },
+                    "jobs": {
+                        "total": st.jobs.len(),
+                        "by_status": {
+                            "queued": st.jobs.values().filter(|j| j.status == "queued").count(),
+                            "running": st.jobs.values().filter(|j| j.status == "running").count(),
+                            "done": st.jobs.values().filter(|j| j.status == "done").count(),
+                            "failed": st.jobs.values().filter(|j| j.status == "failed").count(),
+                            "cancelled": st.jobs.values().filter(|j| j.status == "cancelled").count()
+                        }
+                    }
                 })
             };
             respond_json(stream, meta, snapshot);
@@ -942,6 +965,7 @@ fn mark_job_failed(state: &SharedState, job_id: &str, message: &str) {
         job.status = "failed".to_string();
         job.error_message = message.to_string();
         job.result = Value::Null;
+        job.completed_at = Some(Utc::now());
     }
 }
 
@@ -1331,32 +1355,17 @@ fn compress_file(path: &Path, codec: &str, guard: &TimeoutGuard) -> Result<Value
         contents.extend_from_slice(&buf[..n]);
     }
     let base = path.display().to_string();
-    let output_path = match codec {
-        "xz" => format!("{}.xz", base),
-        _ => format!("{}.gz", base),
-    };
+    let output_path = format!("{}.gz", base);
     let output_file = File::create(&output_path)
         .map_err(|e| HandlerError::msg(format!("unable to create {}: {}", output_path, e)))?;
-    match codec {
-        "xz" => {
-            let mut encoder = XzEncoder::new(output_file, 6);
-            encoder
-                .write_all(&contents)
-                .map_err(|e| HandlerError::msg(format!("xz write error: {}", e)))?;
-            encoder
-                .finish()
-                .map_err(|e| HandlerError::msg(format!("xz finish error: {}", e)))?;
-        }
-        _ => {
-            let mut encoder = GzEncoder::new(output_file, Compression::default());
-            encoder
-                .write_all(&contents)
-                .map_err(|e| HandlerError::msg(format!("gzip write error: {}", e)))?;
-            encoder
-                .finish()
-                .map_err(|e| HandlerError::msg(format!("gzip finish error: {}", e)))?;
-        }
-    }
+    
+    let mut encoder = GzEncoder::new(output_file, Compression::default());
+    encoder
+        .write_all(&contents)
+        .map_err(|e| HandlerError::msg(format!("gzip write error: {}", e)))?;
+    encoder
+        .finish()
+        .map_err(|e| HandlerError::msg(format!("gzip finish error: {}", e)))?;
     Ok(json!({
         "file": base,
         "codec": codec,
