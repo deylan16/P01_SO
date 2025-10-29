@@ -1,303 +1,145 @@
-# Servidor HTTP/1.0 - Proyecto Sistemas Operativos
+# Servidor HTTP/1.0 – Proyecto Sistemas Operativos
 
-Un servidor HTTP/1.0 implementado en Rust que demuestra conceptos de sistemas operativos como concurrencia, sincronización, planificación y manejo de sockets.
+Implementación en Rust de un servidor HTTP/1.0 pensado para ejercitar conceptos de sistemas operativos: multiplexación de E/S, sincronización entre hilos, control de backpressure y persistencia de trabajos de larga duración.
 
-## 🚀 Características
+---
 
-- **Servidor HTTP/1.0 completo** con soporte para GET y HEAD
-- **Concurrencia real** con pools de workers por comando
-- **Sistema de Jobs** para tareas largas con persistencia
-- **Métricas en tiempo real** con percentiles de latencia
-- **Backpressure** y manejo de colas
-- **Configuración flexible** via CLI y variables de entorno
-- **Cobertura de pruebas** del 90%+
+## Requisitos
+- Rust 1.70 o superior (toolchain estable).
+- `cargo` para compilar y ejecutar.
+- Herramientas opcionales para pruebas:
+  - `ab` (ApacheBench) para la prueba de carga.
+  - Postman o `curl` para pruebas funcionales manuales.
+  - `bash` + utilidades GNU para ejecutar los scripts de verificación.
 
-## 📋 Endpoints Implementados
-
-### Endpoints Básicos
-- `GET /status` - Estado del servidor y workers
-- `GET /help` - Lista de comandos disponibles
-- `GET /metrics` - Métricas detalladas del sistema
-
-### Procesamiento de Texto
-- `GET /reverse?text=abc` - Invertir texto
-- `GET /toupper?text=abc` - Convertir a mayúsculas
-- `GET /hash?text=abc` - Hash SHA256
-
-### Operaciones Matemáticas
-- `GET /fibonacci?num=N` - Número de Fibonacci
-- `GET /random?count=N&min=A&max=B` - Números aleatorios
-- `GET /isprime?n=N` - Verificar primalidad
-- `GET /factor?n=N` - Factorización en primos
-- `GET /pi?digits=N` - Cálculo de π
-
-### Operaciones de Archivos
-- `GET /createfile?name=file&content=text&repeat=N` - Crear archivo
-- `GET /deletefile?name=file` - Eliminar archivo
-- `GET /sortfile?name=file&algo=quick|merge` - Ordenar archivo
-- `GET /wordcount?name=file` - Contar palabras/líneas/bytes
-- `GET /grep?name=file&pattern=regex` - Buscar patrones
-- `GET /compress?name=file&codec=gzip` - Comprimir archivo
-- `GET /hashfile?name=file&algo=sha256` - Hash de archivo
-
-### Cálculos Intensivos (CPU-bound)
-- `GET /mandelbrot?width=W&height=H&max_iter=I` - Conjunto de Mandelbrot
-- `GET /matrixmul?size=N&seed=S` - Multiplicación de matrices
-
-### Simulación y Tiempo
-- `GET /sleep?seconds=S` - Dormir N segundos
-- `GET /simulate?seconds=S&task=name` - Simular trabajo
-- `GET /loadtest?tasks=N&sleep=MS` - Prueba de carga
-- `GET /timestamp` - Timestamp actual
-
-### Sistema de Jobs
-- `GET /jobs/submit?task=command&params...` - Encolar trabajo
-- `GET /jobs/status?id=JOB_ID` - Estado del trabajo
-- `GET /jobs/result?id=JOB_ID` - Resultado del trabajo
-- `GET /jobs/cancel?id=JOB_ID` - Cancelar trabajo
-
-## 🛠️ Instalación y Uso
-
-### Prerrequisitos
-- Rust 1.70+ (stable)
-- Compilador C (para dependencias nativas)
-
-### Compilación
+## Compilación
 ```bash
 cargo build --release
 ```
+El binario resultante queda en `target/release/Proyecto_1`.
 
-### Ejecución Básica
+## Ejecución
 ```bash
+# Ejecución básica en modo debug
 cargo run
+
+# Ejecutar el binario generado en release
+./target/release/Proyecto_1
 ```
 
-### Configuración Avanzada
+### Configuración
+Los parámetros pueden indicarse por argumentos CLI o variables de entorno. Ambos caminos son equivalentes; si se usan simultáneamente, los argumentos tienen prioridad.
+
+| Opción CLI          | Variable de entorno        | Descripción                                           | Valor por defecto      |
+|---------------------|----------------------------|-------------------------------------------------------|------------------------|
+| `--bind ADDR`       | `P01_BIND_ADDR`            | Dirección y puerto de escucha                         | `127.0.0.1:8080`       |
+| `--workers N`       | `P01_WORKERS_PER_COMMAND`  | Hilos de trabajo por comando                          | `2`                    |
+| `--max-inflight N`  | `P01_MAX_INFLIGHT`         | Solicitudes concurrentes permitidas por comando       | `32`                   |
+| `--retry-after MS`  | `P01_RETRY_AFTER_MS`       | Cabecera `Retry-After` cuando se aplica backpressure  | `250` ms               |
+| `--timeout MS`      | `P01_TASK_TIMEOUT_MS`      | Tiempo máximo por tarea antes de cancelar             | `60000` ms             |
+| `--data-dir DIR`    | `P01_DATA_DIR`             | Directorio de trabajo para archivos temporales        | Directorio actual      |
+
+Ejemplo completo:
 ```bash
-# Usando argumentos CLI
-cargo run -- --bind 0.0.0.0:8080 --workers 4 --max-inflight 64
-
-# Usando variables de entorno
-P01_WORKERS_PER_COMMAND=4 P01_MAX_INFLIGHT=64 cargo run
+P01_WORKERS_PER_COMMAND=4 P01_MAX_INFLIGHT=64 cargo run -- \
+  --bind 0.0.0.0:8080 \
+  --retry-after 500 \
+  --timeout 90000
 ```
 
-### Opciones de Configuración
+## Pruebas y Validación
 
-#### Argumentos CLI
-- `--bind ADDR` - Dirección de enlace (default: 127.0.0.1:8080)
-- `--workers N` - Workers por comando (default: 2)
-- `--max-inflight N` - Máximo requests en vuelo por comando (default: 32)
-- `--retry-after MS` - Tiempo de retry en ms (default: 250)
-- `--timeout MS` - Timeout de tareas en ms (default: 60000)
-- `--data-dir DIR` - Directorio de datos (default: directorio actual)
-- `--help, -h` - Mostrar ayuda
-
-#### Variables de Entorno
-- `P01_BIND_ADDR` - Dirección de enlace
-- `P01_WORKERS_PER_COMMAND` - Workers por comando
-- `P01_MAX_INFLIGHT` - Máximo requests en vuelo por comando
-- `P01_RETRY_AFTER_MS` - Tiempo de retry en ms
-- `P01_TASK_TIMEOUT_MS` - Timeout de tareas en ms
-- `P01_DATA_DIR` - Directorio de datos
-
-## 🧪 Pruebas
-
-### Ejecutar Pruebas Unitarias
+### 1. Pruebas unitarias y de lógica
 ```bash
 cargo test
 ```
+Las pruebas cubren utilidades de parsing, manejo de jobs y estadísticas de latencia.
 
-### Ejecutar Pruebas de Integración
+### 2. Pruebas automatizadas de endpoints
 ```bash
-# Iniciar servidor en una terminal
-cargo run
-
-# En otra terminal, ejecutar pruebas
-chmod +x test_server.sh
-./test_server.sh
+chmod +x test_basic.sh test_endpoints.sh test_server.sh
+./test_server.sh            # Levanta el servidor, ejecuta comprobaciones y lo detiene
+./test_endpoints.sh         # Requiere un servidor en ejecución en 127.0.0.1:8080
 ```
 
-### Ejemplos de Uso con curl
-
+### 3. Prueba de carga
+Con el servidor en ejecución:
 ```bash
-# Estado del servidor
+ab -n 30 -c 30 http://127.0.0.1:8080/sleep?seconds=1
+```
+El endpoint `/sleep` se usa como tarea de latencia controlada para verificar el comportamiento bajo concurrencia.
+
+### 4. Pruebas funcionales manuales
+Las validaciones manuales se realizaron con una colección de Postman (ver captura incluida en la carpeta del proyecto). Para replicarlas:
+1. Importar la colección `P01_functional_tests` en Postman.
+2. Configurar la variable `{{baseUrl}}` con `http://127.0.0.1:8080`.
+3. Ejecutar los requests agrupados en _Rutas felices_ y _Errores esperados_ para inspeccionar las respuestas JSON.
+
+## Uso rápido con curl
+```bash
+# Estado del servidor y workers
 curl http://127.0.0.1:8080/status
 
-# Reversar texto
-curl "http://127.0.0.1:8080/reverse?text=hello"
+# Procesamiento de texto
+curl "http://127.0.0.1:8080/reverse?text=hola"
+curl "http://127.0.0.1:8080/toupper?text=hola"
 
-# Fibonacci
-curl "http://127.0.0.1:8080/fibonacci?num=10"
+# Operaciones numéricas
+curl "http://127.0.0.1:8080/fibonacci?num=20"
+curl "http://127.0.0.1:8080/random?count=5&min=10&max=99"
 
-# Crear archivo
-curl "http://127.0.0.1:8080/createfile?name=test.txt&content=Hello World"
+# Archivos
+curl "http://127.0.0.1:8080/createfile?name=demo.txt&content=Hola&repeat=2"
+curl "http://127.0.0.1:8080/wordcount?name=demo.txt"
+curl "http://127.0.0.1:8080/compress?name=demo.txt&codec=gzip"
 
-# Encolar trabajo
-curl "http://127.0.0.1:8080/jobs/submit?task=reverse&text=hello"
-
-# Ver métricas
-curl http://127.0.0.1:8080/metrics
+# Jobs asíncronos
+curl "http://127.0.0.1:8080/jobs/submit?task=mandelbrot&width=80&height=40"
 ```
 
-## 🏗️ Arquitectura
+## Arquitectura
 
-### Componentes Principales
+### Visión general
+1. **`src/main.rs`** prepara la configuración, levanta el `TcpListener` y controla la asignación de solicitudes a los workers de cada comando. También implementa el control de backpressure y la inspección de `/status` y `/metrics`.
+2. **`src/control.rs`** mantiene el estado global (`ServerState`) compuesto por estadísticas, colas por comando, información de workers y el registro persistente de jobs (`jobs_journal.json`). Expone utilidades para persistencia y cálculo de percentiles de latencia.
+3. **`src/handlers.rs`** contiene la lógica de cada endpoint; las funciones trabajan sobre parámetros ya parseados y devuelven JSON uniforme mediante `ResponseMeta`.
+4. **`src/errors.rs`** centraliza el formato de respuestas HTTP (errores, JSON, cabeceras adicionales) y actualiza jobs en función del resultado.
 
-1. **main.rs** - Punto de entrada, configuración y bucle principal
-2. **handlers.rs** - Implementación de todos los endpoints
-3. **control.rs** - Gestión de estado, workers y jobs
-4. **errors.rs** - Manejo de errores HTTP y respuestas
+### Flujo de una solicitud
+1. El hilo principal acepta la conexión y parsea la petición (solo se admiten `GET`/`HEAD`).  
+2. De existir saturación (`max_in_flight_per_command`), responde `503` con cabecera `Retry-After` calculada.  
+3. Cada comando está asociado a un pool de `mpsc::Sender<Task>`; el hilo principal rota (`round-robin`) sobre ellos para distribuir la carga.  
+4. El worker marca su estado como ocupado, ejecuta `handle_command` con un deadline por tarea y, al finalizar, actualiza latencias y métricas.  
+5. Las respuestas incluyen `X-Request-Id` y `X-Worker-Pid` para trazabilidad.
 
-### Modelo de Concurrencia
+### Sistema de jobs
+- Persistencia: los trabajos se guardan en `jobs_journal.json` y se recargan al iniciar (`load_jobs`).  
+- Estados soportados: `pending`, `running`, `done`, `cancelled`, `error`.  
+- Endpoints REST dedicados (`/jobs/submit`, `/jobs/status`, `/jobs/result`, `/jobs/cancel`).  
+- Los resultados se almacenan como `serde_json::Value`, lo que permite estructurar respuestas complejas sin perder el tipo dinámico.
 
-- **Pool de Workers**: Cada comando tiene N workers dedicados
-- **Round-robin**: Distribución de tareas entre workers
-- **Thread-safe**: Uso de Arc<Mutex<>> para estado compartido
-- **Canales mpsc**: Comunicación entre hilo principal y workers
+### Manejo de datos y archivos
+- Las operaciones sobre archivos incluyen normalización de rutas para evitar traversal (`sanitize_path`).  
+- Se soportan operaciones de hash (`/hash`, `/hashfile`), compresión gzip (`/compress`) y ordenamiento configurable (`/sortfile`).  
+- Los datos de ejemplo viven en `data*.txt` y pueden reutilizarse para pruebas.
 
-### Sistema de Jobs
+### Métricas y observabilidad
+- `/status` expone información resumida: uptime, conexiones totales, workers activos y colas.  
+- `/metrics` retorna métricas agregadas por comando, incluyendo percentiles P50/P95/P99 calculados sobre las últimas muestras (`MAX_LATENCY_SAMPLES`).  
+- El contador global de solicitudes (`REQUEST_COUNTER`) permite etiquetar respuestas y jobs.
 
-- **Persistencia**: Jobs se guardan en `jobs_journal.json`
-- **Estados**: queued → running → done/failed/cancelled
-- **Timeouts**: Configurables por tipo de tarea
-- **Progreso**: Tracking de progreso y ETA
+## Endpoints destacados
+Las rutas están agrupadas en categorías para facilitar la exploración; todas responden JSON (salvo errores puntuales):
+- Texto: `/reverse`, `/toupper`, `/hash`.
+- Números: `/fibonacci`, `/random`, `/isprime`, `/factor`, `/pi`, `/mandelbrot`, `/matrixmul`.
+- Archivos: `/createfile`, `/deletefile`, `/sortfile`, `/wordcount`, `/grep`, `/compress`, `/hashfile`.
+- Gestión de tiempo: `/sleep`, `/simulate`, `/loadtest`, `/timestamp`.
+- Monitoreo: `/status`, `/help`, `/metrics`.
+- Jobs: `/jobs/submit`, `/jobs/status`, `/jobs/result`, `/jobs/cancel`.
 
-### Métricas
+## Recursos útiles
+- Scripts auxiliares: `test_basic.sh`, `test_endpoints.sh`, `test_server.sh`.
+- Datos de prueba: `data.txt`, `data2.txt`, `data.txt.gz`.
+- Snapshot de pruebas manuales: captura de Postman incluida en la carpeta raíz `P01_SO`.
 
-- **Latencia**: P50, P95, P99 percentiles
-- **Throughput**: Requests por segundo
-- **Colas**: Tamaño de colas por comando
-- **Workers**: Estado de workers (total/busy)
-
-## 📊 Monitoreo
-
-### Endpoint /status
-```json
-{
-  "uptime_seconds": 3600,
-  "total_connections": 1500,
-  "pid": 12345,
-  "queues": {"reverse": 0, "fibonacci": 2},
-  "latency_ms": {"reverse": {"p50": 5, "p95": 12}},
-  "workers": [{"command": "reverse", "thread_id": "ThreadId(1)", "busy": false}]
-}
-```
-
-### Endpoint /metrics
-```json
-{
-  "uptime_seconds": 3600,
-  "total_connections": 1500,
-  "pid": 12345,
-  "queues": {"reverse": 0, "fibonacci": 2},
-  "workers": {"reverse": {"total": 2, "busy": 0}},
-  "latency_ms": {"reverse": {"count": 100, "p50": 5, "p95": 12, "p99": 25}},
-  "config": {
-    "workers_per_command": 2,
-    "max_in_flight_per_command": 32,
-    "retry_after_ms": 250,
-    "task_timeout_ms": 60000
-  },
-  "jobs": {
-    "total": 10,
-    "by_status": {"queued": 2, "running": 1, "done": 6, "failed": 1}
-  }
-}
-```
-
-## 🔧 Desarrollo
-
-### Estructura del Proyecto
-```
-src/
-├── main.rs          # Punto de entrada y configuración
-├── handlers.rs      # Implementación de endpoints
-├── control.rs       # Gestión de estado y workers
-└── errors.rs        # Manejo de errores HTTP
-
-target/              # Archivos de compilación
-jobs_journal.json    # Persistencia de jobs
-test_server.sh       # Script de pruebas
-README.md           # Este archivo
-```
-
-### Agregar Nuevos Endpoints
-
-1. Agregar el endpoint a la lista en `main.rs`
-2. Implementar el handler en `handlers.rs`
-3. Agregar pruebas unitarias
-4. Actualizar documentación
-
-### Debugging
-
-```bash
-# Compilar en modo debug
-cargo build
-
-# Ejecutar con logs detallados
-RUST_LOG=debug cargo run
-
-# Verificar compilación
-cargo check
-
-# Limpiar build
-cargo clean
-```
-
-## 📈 Rendimiento
-
-### Benchmarks Típicos
-- **Latencia P50**: 1-5ms (endpoints simples)
-- **Latencia P95**: 5-50ms (dependiendo del endpoint)
-- **Throughput**: 1000+ requests/segundo
-- **Memoria**: ~10-50MB (dependiendo de configuración)
-
-### Optimizaciones Implementadas
-- Pool de workers reutilizable
-- Parsing eficiente de HTTP
-- Serialización JSON optimizada
-- Gestión de memoria con VecDeque para métricas
-- Timeouts configurables
-
-## 🐛 Solución de Problemas
-
-### Problemas Comunes
-
-1. **Puerto en uso**: Cambiar puerto con `--bind 127.0.0.1:8081`
-2. **Workers bloqueados**: Verificar timeouts y deadlocks
-3. **Memoria alta**: Reducir `max_in_flight_per_command`
-4. **Jobs no persisten**: Verificar permisos de escritura
-
-### Logs y Debugging
-
-```bash
-# Ver logs del servidor
-cargo run 2>&1 | tee server.log
-
-# Monitorear métricas en tiempo real
-watch -n 1 'curl -s http://127.0.0.1:8080/metrics | jq'
-
-# Verificar estado de jobs
-curl -s http://127.0.0.1:8080/metrics | jq '.jobs'
-```
-
-## 📝 Licencia
-
-Este proyecto es parte de un curso académico de Sistemas Operativos.
-
-## 🤝 Contribuciones
-
-Para contribuir al proyecto:
-
-1. Fork el repositorio
-2. Crea una rama para tu feature
-3. Implementa cambios con pruebas
-4. Ejecuta `cargo test` para verificar
-5. Crea un Pull Request
-
-## 📚 Referencias
-
-- [HTTP/1.0 Specification](https://tools.ietf.org/html/rfc1945)
-- [Rust Book](https://doc.rust-lang.org/book/)
-- [Tokio Async Runtime](https://tokio.rs/)
-- [Serde JSON](https://serde.rs/)
+Con esto deberías contar con todo lo necesario para compilar, ejecutar, probar y entender la arquitectura del proyecto. ¡Buen hacking!
